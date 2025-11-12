@@ -43,12 +43,12 @@ def filtrar_datos(df, start_date, end_date, razon, excluir, mes, año):
     if end_date:
         df_filtered = df_filtered[df_filtered["Fecha"] <= pd.to_datetime(end_date)]
     if razon:
-        df_filtered = df_filtered[df_filtered["Compra"].str.contains(razon, case=False, na=False)]
+        df_filtered = df_filtered[df_filtered["Concepto"].str.contains(razon, case=False, na=False)]
     if excluir:
         palabras_excluir = [x.strip() for x in excluir.split(",") if x.strip()]
         if palabras_excluir:
             patron = "|".join(palabras_excluir)
-            df_filtered = df_filtered[~df_filtered["Compra"].str.contains(patron, case=False, na=False)]
+            df_filtered = df_filtered[~df_filtered["Concepto"].str.contains(patron, case=False, na=False)]
 
     return df_filtered
 
@@ -61,9 +61,9 @@ if link:
     df = cargar_datos_google_public(link)
 
     if not df.empty:
-        columnas_requeridas = {"Fecha", "Compra", "Cantidad"}
+        columnas_requeridas = {"Fecha", "Cantidad", "Ingreso /Egreso", "Concepto"}
         if not columnas_requeridas.issubset(df.columns):
-            st.error("❌ El archivo no contiene las columnas necesarias: Fecha, Compra, Cantidad.")
+            st.error("❌ El archivo no contiene las columnas necesarias: Fecha, Cantidad, Ingreso /Egreso, Concepto.")
             st.stop()
 
         # Normalización de datos
@@ -163,19 +163,19 @@ if link:
 
         # --- Pie chart 2: Distribución de gastos ---
         with col_pie2:
-            st.markdown("### 🛒 Distribución de gastos por compra")
+            st.markdown("### 🛒 Distribución de gastos por concepto")
             gastos_filtrados = df_final[df_final["Cantidad"] < 0]
             if not gastos_filtrados.empty:
                 resumen_gastos = (
-                    gastos_filtrados.assign(Compra=lambda x: x["Compra"].fillna("Sin descripción").str.strip().str.lower())
-                    .groupby("Compra", as_index=False)["Cantidad"]
+                    gastos_filtrados.assign(Concepto=lambda x: x["Concepto"].fillna("Sin descripción").str.strip().str.lower())
+                    .groupby("Concepto", as_index=False)["Cantidad"]
                     .sum()
                     .sort_values(by="Cantidad")
                 )
                 resumen_gastos["Cantidad"] = resumen_gastos["Cantidad"].abs()
                 fig_pie_gastos = px.pie(
                     resumen_gastos,
-                    names="Compra",
+                    names="Concepto",
                     values="Cantidad",
                     title="Distribución de gastos por concepto",
                     color_discrete_sequence=px.colors.sequential.Magma_r,
@@ -210,8 +210,8 @@ if link:
         # --- Top 10 gastos ---
         st.markdown("### 🏆 Top 10 gastos filtrados")
         top_gastos = (
-            gastos_filtrados.assign(Compra=lambda x: x["Compra"].fillna("Sin descripción").str.lower().str.strip())
-            .groupby("Compra", as_index=False)["Cantidad"]
+            gastos_filtrados.assign(Concepto=lambda x: x["Concepto"].fillna("Sin descripción").str.lower().str.strip())
+            .groupby("Concepto", as_index=False)["Cantidad"]
             .sum()
             .sort_values(by="Cantidad")
             .head(10)
@@ -220,7 +220,7 @@ if link:
             fig_top = px.bar(
                 top_gastos,
                 x="Cantidad",
-                y="Compra",
+                y="Concepto",
                 orientation="h",
                 color="Cantidad",
                 color_continuous_scale=["#E74C3C", "#C0392B"],
