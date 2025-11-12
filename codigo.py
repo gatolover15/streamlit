@@ -229,4 +229,16 @@ if link:
                 orientation="h",
                 color="Cantidad",
                 color_continuous_scale=["#E74C3C", "#C0392B"],
-                tit
+                title="🏆 Top 10 gastos filtrados",
+                text="Cantidad"
+            )
+            fig_top.update_traces(texttemplate="%{text:.2f}", textposition="outside")
+            fig_top.update_layout(
+                yaxis={'categoryorder': 'total ascending'},
+                template="plotly_dark",
+                xaxis_title="Monto ($)",
+                yaxis_title="Concepto"
+            )
+            st.plotly_chart(fig_top, use_container_width=True)
+        else:
+            st.info("⚠️ No hay suficientes gastos para mostrar el Top 10.")
