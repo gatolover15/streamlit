@@ -242,3 +242,38 @@ if link:
             yaxis_title="Monto ($)"
         )
         st.plotly_chart(fig_scatter, use_container_width=True)
+       
+# --- Gráfico de barras horizontales Top 10 gastos ---
+st.markdown("### 📊 Top 10 gastos filtrados (barras horizontales)")
+if not gastos_filtrados.empty:
+    # Agrupamos por concepto y sumamos los gastos
+    resumen_gastos_barras = (
+        gastos_filtrados.assign(
+            Concepto=lambda x: x["Concepto"].fillna("Sin descripción").str.strip().str.lower()
+        )
+        .groupby("Concepto", as_index=False)["Cantidad"]
+        .sum()
+        .sort_values(by="Cantidad")
+        .head(10)
+    )
+    resumen_gastos_barras["Cantidad"] = resumen_gastos_barras["Cantidad"].abs()
+
+    # Crear gráfico de barras horizontales
+    fig_barras = px.bar(
+        resumen_gastos_barras,
+        x="Cantidad",
+        y="Concepto",
+        orientation="h",
+        text="Cantidad",
+        color="Cantidad",
+        color_continuous_scale=px.colors.sequential.Magma_r,
+        title="Top 10 gastos filtrados",
+    )
+    fig_barras.update_layout(template="plotly_dark", yaxis={'categoryorder':'total ascending'})
+    st.plotly_chart(fig_barras, use_container_width=True)
+else:
+    st.info("⚠️ No hay gastos para mostrar en la gráfica de barras.")
+
+
+
+
