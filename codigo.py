@@ -115,7 +115,12 @@ if link:
         # TABLA DE MOVIMIENTOS
         # --------------------------
         st.markdown("### 📄 Tabla de movimientos filtrados")
-        st.dataframe(df_final, use_container_width=True)
+
+        columnas_mostrar = ["Fecha", "Cantidad", "Ingreso /Egreso", "Concepto", "Balance Neto"]
+        df_mostrar = df_final[columnas_mostrar].copy()
+        df_mostrar.rename(columns={"Balance Neto": "Balance Neto Filtrado"}, inplace=True)
+
+        st.dataframe(df_mostrar, use_container_width=True)
 
         # --------------------------
         # MÉTRICAS GENERALES
@@ -224,16 +229,4 @@ if link:
                 orientation="h",
                 color="Cantidad",
                 color_continuous_scale=["#E74C3C", "#C0392B"],
-                title="🏆 Top 10 gastos filtrados",
-                text="Cantidad"
-            )
-            fig_top.update_traces(texttemplate="%{text:.2f}", textposition="outside")
-            fig_top.update_layout(
-                yaxis={'categoryorder': 'total ascending'},
-                template="plotly_dark",
-                xaxis_title="Monto ($)",
-                yaxis_title="Concepto"
-            )
-            st.plotly_chart(fig_top, use_container_width=True)
-        else:
-            st.info("⚠️ No hay suficientes gastos para mostrar el Top 10.")
+                tit
