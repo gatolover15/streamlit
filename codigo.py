@@ -146,8 +146,6 @@ if link:
         # --------------------------
         if not df_final.empty:
             df_final["Tipo"] = np.where(df_final["Cantidad"] >= 0, "Ingreso", "Gasto")
-
-            # Balance neto empezando en el primer valor (no en 0)
             df_final["Balance Neto"] = df_final["Cantidad"].cumsum()
             df_final["Balance Neto"] = df_final["Balance Neto"] - df_final["Balance Neto"].iloc[0] + df_final["Cantidad"].iloc[0]
 
@@ -157,8 +155,6 @@ if link:
         st.markdown("### 📄 Tabla de movimientos")
         if not df_final.empty:
             st.dataframe(df_final, use_container_width=True)
-        else:
-            st.info("No hay datos para mostrar según los filtros seleccionados.")
 
         # --------------------------
         # MÉTRICAS
@@ -177,54 +173,9 @@ if link:
                 st.metric("🧾 Balance filtrado", f"${balance:,.2f}")
 
             # --------------------------
-            # DESCARGA CSV
-            # --------------------------
-            st.download_button(
-                "📥 Descargar datos filtrados (CSV)",
-                df_final.to_csv(index=False).encode("utf-8"),
-                "datos_filtrados.csv",
-                "text/csv"
-            )
-
-            # --------------------------
             # VISUALIZACIONES
             # --------------------------
             st.markdown("## 📈 Visualizaciones Interactivas")
-
-            # --- MOVIMIENTOS INDIVIDUALES ---
-            df_final["ValorVisual"] = df_final["Cantidad"].abs()
-            df_final["FechaVisual"] = df_final["Fecha"] + pd.to_timedelta(
-                np.random.uniform(-6, 6, len(df_final)), unit="h"
-            )
-
-            fig_movimientos = px.scatter(
-                df_final,
-                x="FechaVisual",
-                y="ValorVisual",
-                color="Tipo",
-                color_discrete_map={"Ingreso": "#2ECC71", "Gasto": "#E74C3C"},
-                size="ValorVisual",
-                size_max=25,
-                hover_data={
-                    "Compra": True,
-                    "Cantidad": True,
-                    "Tipo": True,
-                    "Balance Neto": True,
-                    "FechaVisual": "|%b %d, %Y %H:%M"
-                },
-                title="💰 Movimientos de ingresos y gastos",
-            )
-
-            fig_movimientos.update_traces(
-                marker=dict(opacity=0.8, line=dict(width=0.5, color="white"))
-            )
-            fig_movimientos.update_layout(
-                xaxis_title="Fecha",
-                yaxis_title="Monto ($)",
-                hovermode="closest",
-                template="plotly_dark",
-            )
-            st.plotly_chart(fig_movimientos, use_container_width=True)
 
             # --- BALANCE ACUMULADO ---
             st.markdown("### 📊 Evolución del balance acumulado")
@@ -236,6 +187,16 @@ if link:
                 markers=True,
                 color_discrete_sequence=["#3498DB"],
             )
+
+            # 🔹 Línea de tendencia suavizada
+            df_trend = df_final.copy()
+            df_trend["Tendencia"] = df_trend["Balance Neto"].rolling(window=5, min_periods=1).mean()
+            fig_balance.add_scatter(
+                x=df_trend["Fecha"], y=df_trend["Tendencia"],
+                mode="lines", name="Tendencia (suavizada)",
+                line=dict(color="#E67E22", width=3, dash="dot")
+            )
+
             fig_balance.update_traces(line=dict(width=3))
             fig_balance.update_layout(
                 xaxis_title="Fecha",
@@ -264,7 +225,7 @@ if link:
                     y="Compra_Normalizada",
                     orientation="h",
                     color="Cantidad",
-                    color_continuous_scale="Magma",
+                    color_continuous_scale=["#E74C3C", "#C0392B"],
                     title="🏆 Top 10 gastos filtrados",
                     text="Cantidad",
                 )
@@ -273,11 +234,55 @@ if link:
                     template="plotly_dark"
                 )
                 st.plotly_chart(fig_top, use_container_width=True)
-            else:
-                st.info("No hay gastos para mostrar en el Top 10.")
-        else:
-            st.warning("No hay métricas ni gráficas que mostrar debido a la falta de datos.")
-    else:
-        st.warning("No se pudieron cargar los datos.")
-else:
-    st.info("Por favor, ingresa el enlace del Google Sheets para comenzar.")
+
+            # --------------------------
+            # PIE CHARTS
+            # --------------------------
+            st.markdown("## 🥧 Gráficos de distribución")
+
+            col_pie1, col_pie2 = st.columns(2)
+
+            with col_pie1:
+                st.markdown("### 💸 Distribución de ingresos vs gastos")
+                resumen = df_final.groupby("Tipo")["Cantidad"].sum().reset_index()
+                if not resumen.empty:
+                    fig_pie_tipo = px.pie(
+                        resumen,
+                        names="Tipo",
+                        values="Cantidad",
+                        color="Tipo",
+                        color_discrete_map={"Ingreso": "#2ECC71", "Gasto": "#E74C3C"},
+                        title="Ingresos vs Gastos",
+                        hole=0.4
+                    )
+                    fig_pie_tipo.update_traces(textposition="inside", textinfo="percent+label")
+                    fig_pie_tipo.update_layout(template="plotly_dark")
+                    st.plotly_chart(fig_pie_tipo, use_container_width=True)
+                else:
+                    st.info("No hay datos suficientes para mostrar el gráfico de ingresos vs gastos.")
+
+            with col_pie2:
+                st.markdown("### 🛒 Distribución de gastos por compra (según filtro)")
+                gastos_filtrados = df_final[df_final["Cantidad"] < 0]
+                if not gastos_filtrados.empty:
+                    resumen_gastos = (
+                        gastos_filtrados.groupby("Compra")["Cantidad"]
+                        .sum()
+                        .sort_values()
+                        .reset_index()
+                    )
+                    resumen_gastos["Cantidad"] = resumen_gastos["Cantidad"].abs()
+
+                    fig_pie_gastos = px.pie(
+                        resumen_gastos,
+                        names="Compra",
+                        values="Cantidad",
+                        title="Distribución de gastos por compra",
+                        color_discrete_sequence=px.colors.sequential.Magma_r,
+                        hole=0.4
+                    )
+                    fig_pie_gastos.update_traces(textposition="inside", textinfo="percent+label")
+                    fig_pie_gastos.update_layout(template="plotly_dark")
+                    st.plotly_chart(fig_pie_gastos, use_container_width=True)
+                else:
+                    st.info("No hay gastos filtrados para mostrar en el gráfico de compras.")
