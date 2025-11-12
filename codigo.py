@@ -53,10 +53,17 @@ def filtrar_datos(df, start_date, end_date, razon, excluir, mes, año):
     return df_filtered
 
 # --------------------------
+# ENLACE Y ACTUALIZACIÓN
+# --------------------------
+link = st.text_input("🔗 Pega aquí el enlace de tu Google Sheet (puede ser normal o .csv):")
+
+if st.button("🔄 Actualizar datos desde Google Sheets"):
+    st.cache_data.clear()
+    st.success("✅ Datos actualizados correctamente.")
+
+# --------------------------
 # CARGA DE DATOS
 # --------------------------
-link = st.text_input("Pega aquí el enlace de tu Google Sheet (puede ser normal o .csv):")
-
 if link:
     df = cargar_datos_google_public(link)
 
@@ -78,8 +85,10 @@ if link:
         }
         df["MesNombre"] = df["Fecha"].dt.month.map(meses_dict)
 
-        st.subheader("📋 Vista previa de los datos")
-        st.dataframe(df.head())
+        # Vista previa (últimos 5 registros más recientes)
+        st.subheader("📋 Vista previa de los últimos 5 registros (más recientes)")
+        df_sorted = df.sort_values("Fecha", ascending=False)
+        st.dataframe(df_sorted.head(5))
 
         # --------------------------
         # FILTROS
@@ -216,21 +225,20 @@ if link:
 
         # --- Scatter de ingresos y gastos ---
         st.markdown("### 🟢🔴 Distribución de ingresos y gastos")
-        
+
         # Usar valor absoluto en el eje Y (magnitud del movimiento)
         df_final["MontoAbs"] = df_final["Cantidad"].abs()
-        
+
         fig_scatter = px.scatter(
             df_final,
             x="Fecha",
-            y="MontoAbs",  # 👈 aquí usamos el valor absoluto
+            y="MontoAbs",
             color="Tipo",
             size=df_final["MontoAbs"],
             color_discrete_map={"Ingreso": "#2ECC71", "Gasto": "#E74C3C"},
             hover_data=["Concepto", "Ingreso /Egreso", "Cantidad"],
             title="🔵 Ingresos y Gastos (tamaño proporcional al monto)",
         )
-        
         fig_scatter.update_traces(opacity=0.8)
         fig_scatter.update_layout(
             template="plotly_dark",
@@ -238,35 +246,3 @@ if link:
             yaxis_title="Monto ($)",
         )
         st.plotly_chart(fig_scatter, use_container_width=True)
-    
-        # --- Top 10 gastos ---
-        st.markdown("### 🏆 Top 10 gastos filtrados")
-        top_gastos = (
-            gastos_filtrados.assign(Concepto=lambda x: x["Concepto"].fillna("Sin descripción").str.lower().str.strip())
-            .groupby("Concepto", as_index=False)["Cantidad"]
-            .sum()
-            .sort_values(by="Cantidad")
-            .head(10)
-        )
-        if not top_gastos.empty:
-            fig_top = px.bar(
-                top_gastos,
-                x="Cantidad",
-                y="Concepto",
-                orientation="h",
-                color="Cantidad",
-                color_continuous_scale=["#E74C3C", "#C0392B"],
-                title="🏆 Top 10 gastos filtrados",
-                text="Cantidad"
-            )
-            fig_top.update_traces(texttemplate="%{text:.2f}", textposition="outside")
-            fig_top.update_layout(
-                yaxis={'categoryorder': 'total ascending'},
-                template="plotly_dark",
-                xaxis_title="Monto ($)",
-                yaxis_title="Concepto"
-            )
-            st.plotly_chart(fig_top, use_container_width=True)
-        else:
-            st.info("⚠️ No hay suficientes gastos para mostrar el Top 10.")
-
