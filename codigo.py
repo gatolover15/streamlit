@@ -149,6 +149,28 @@ if link:
         # --------------------------
         st.markdown("## 📈 Visualizaciones Interactivas")
 
+        # --- Pie chart: Ingresos vs Gastos ---
+        st.markdown("### 💸 Distribución de ingresos vs gastos")
+        if total_ingresos != 0 or total_gastos != 0:
+            df_pie = pd.DataFrame({
+                "Tipo": ["Ingresos", "Gastos"],
+                "Monto": [total_ingresos, abs(total_gastos)]
+            })
+            fig_pie = px.pie(
+                df_pie,
+                names="Tipo",
+                values="Monto",
+                color="Tipo",
+                color_discrete_map={"Ingresos": "#2ECC71", "Gastos": "#E74C3C"},
+                title="💹 Proporción de ingresos y gastos",
+                hole=0.4
+            )
+            fig_pie.update_traces(textinfo='percent+label', pull=[0.05, 0.05])
+            fig_pie.update_layout(template="plotly_dark")
+            st.plotly_chart(fig_pie, use_container_width=True)
+        else:
+            st.info("⚠️ No hay datos suficientes para mostrar este gráfico.")
+
         # --- Tabla Top 10 gastos ---
         st.markdown("### 📋 Tabla Top 10 gastos por concepto")
         gastos_filtrados = df_final[df_final["Cantidad"] < 0]
