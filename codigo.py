@@ -216,20 +216,29 @@ if link:
 
         # --- Scatter de ingresos y gastos ---
         st.markdown("### 🟢🔴 Distribución de ingresos y gastos")
+        
+        # Usar valor absoluto en el eje Y (magnitud del movimiento)
+        df_final["MontoAbs"] = df_final["Cantidad"].abs()
+        
         fig_scatter = px.scatter(
             df_final,
             x="Fecha",
-            y="Cantidad",
+            y="MontoAbs",  # 👈 aquí usamos el valor absoluto
             color="Tipo",
-            size=np.abs(df_final["Cantidad"]),
+            size=df_final["MontoAbs"],
             color_discrete_map={"Ingreso": "#2ECC71", "Gasto": "#E74C3C"},
-            hover_data=["Concepto", "Ingreso /Egreso"],
+            hover_data=["Concepto", "Ingreso /Egreso", "Cantidad"],
             title="🔵 Ingresos y Gastos (tamaño proporcional al monto)",
         )
+        
         fig_scatter.update_traces(opacity=0.8)
-        fig_scatter.update_layout(template="plotly_dark", xaxis_title="Fecha", yaxis_title="Monto")
+        fig_scatter.update_layout(
+            template="plotly_dark",
+            xaxis_title="Fecha",
+            yaxis_title="Monto ($)",
+        )
         st.plotly_chart(fig_scatter, use_container_width=True)
-
+    
         # --- Top 10 gastos ---
         st.markdown("### 🏆 Top 10 gastos filtrados")
         top_gastos = (
@@ -260,3 +269,4 @@ if link:
             st.plotly_chart(fig_top, use_container_width=True)
         else:
             st.info("⚠️ No hay suficientes gastos para mostrar el Top 10.")
+
