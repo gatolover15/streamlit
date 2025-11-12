@@ -36,7 +36,7 @@ def filtrar_datos(df, start_date, end_date, razon, excluir, mes, año):
     if año != "Todos":
         df_filtered = df_filtered[df_filtered["Fecha"].dt.year == int(año)]
     if mes != "Todos":
-        df_filtered = df_filtered[df_filtered["Fecha"].dt.month_name(locale='es') == mes]
+        df_filtered = df_filtered[df_filtered["MesNombre"] == mes]
 
     if start_date:
         df_filtered = df_filtered[df_filtered["Fecha"] >= pd.to_datetime(start_date)]
@@ -73,6 +73,14 @@ if link:
         df["Cantidad"] = df["Cantidad"].astype(str).str.replace(",", ".").astype(float)
         df.dropna(subset=["Fecha", "Cantidad"], inplace=True)
 
+        # Diccionario de meses en español
+        meses_dict = {
+            1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril",
+            5: "Mayo", 6: "Junio", 7: "Julio", 8: "Agosto",
+            9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre"
+        }
+        df["MesNombre"] = df["Fecha"].dt.month.map(meses_dict)
+
         st.subheader("📋 Vista previa de los datos")
         st.dataframe(df.head())
 
@@ -87,7 +95,7 @@ if link:
         with col2:
             end_date = st.date_input("Fecha final", value=None)
         with col3:
-            mes = st.selectbox("Filtrar por mes", ["Todos"] + list(df["Fecha"].dt.month_name(locale='es').dropna().unique()))
+            mes = st.selectbox("Filtrar por mes", ["Todos"] + sorted(df["MesNombre"].dropna().unique().tolist()))
         with col4:
             año = st.selectbox("Filtrar por año", ["Todos"] + sorted(df["Fecha"].dt.year.dropna().unique().astype(str).tolist()))
 
@@ -139,8 +147,9 @@ if link:
         if not df_final.empty:
             df_final["Tipo"] = np.where(df_final["Cantidad"] >= 0, "Ingreso", "Gasto")
 
-            # ✅ Balance neto que inicia con el primer valor real
+            # Balance neto empezando en el primer valor (no en 0)
             df_final["Balance Neto"] = df_final["Cantidad"].cumsum()
+            df_final["Balance Neto"] = df_final["Balance Neto"] - df_final["Balance Neto"].iloc[0] + df_final["Cantidad"].iloc[0]
 
         # --------------------------
         # TABLA DE RESULTADOS
@@ -203,7 +212,7 @@ if link:
                     "Balance Neto": True,
                     "FechaVisual": "|%b %d, %Y %H:%M"
                 },
-                title="💰 Movimientos de ingresos y gastos (separados dentro del mismo día)",
+                title="💰 Movimientos de ingresos y gastos",
             )
 
             fig_movimientos.update_traces(
@@ -223,7 +232,7 @@ if link:
                 df_final,
                 x="Fecha",
                 y="Balance Neto",
-                title="📈 Balance acumulado en el tiempo (Balance Neto)",
+                title="📈 Balance acumulado en el tiempo",
                 markers=True,
                 color_discrete_sequence=["#3498DB"],
             )
