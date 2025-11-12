@@ -142,8 +142,9 @@ if link:
         # --------------------------
         st.markdown("## 📈 Visualizaciones Interactivas")
 
-        # --- Pie chart 1: Ingresos vs Gastos ---
         col_pie1, col_pie2 = st.columns(2)
+
+        # --- Pie chart 1: Ingresos vs Gastos ---
         with col_pie1:
             st.markdown("### 💸 Distribución de ingresos vs gastos")
             if total_ingresos != 0 or total_gastos != 0:
@@ -166,9 +167,9 @@ if link:
             else:
                 st.info("⚠️ No hay datos suficientes para mostrar este gráfico.")
 
-        # --- Pie chart 2: Distribución de gastos ---
+        # --- Pie chart 2: Top 10 gastos ---
         with col_pie2:
-            st.markdown("### 🛒 Distribución de gastos por concepto")
+            st.markdown("### 🛒 Top 10 gastos por concepto")
             gastos_filtrados = df_final[df_final["Cantidad"] < 0]
             if not gastos_filtrados.empty:
                 resumen_gastos = (
@@ -176,13 +177,14 @@ if link:
                     .groupby("Concepto", as_index=False)["Cantidad"]
                     .sum()
                     .sort_values(by="Cantidad")
+                    .head(10)
                 )
                 resumen_gastos["Cantidad"] = resumen_gastos["Cantidad"].abs()
                 fig_pie_gastos = px.pie(
                     resumen_gastos,
                     names="Concepto",
                     values="Cantidad",
-                    title="Distribución de gastos por concepto",
+                    title="Top 10 gastos por concepto",
                     color_discrete_sequence=px.colors.sequential.Magma_r,
                     hole=0.4
                 )
@@ -211,6 +213,22 @@ if link:
         )
         fig_balance.update_layout(template="plotly_dark", hovermode="x unified")
         st.plotly_chart(fig_balance, use_container_width=True)
+
+        # --- Scatter de ingresos y gastos ---
+        st.markdown("### 🟢🔴 Distribución de ingresos y gastos")
+        fig_scatter = px.scatter(
+            df_final,
+            x="Fecha",
+            y="Cantidad",
+            color="Tipo",
+            size=np.abs(df_final["Cantidad"]),
+            color_discrete_map={"Ingreso": "#2ECC71", "Gasto": "#E74C3C"},
+            hover_data=["Concepto", "Ingreso /Egreso"],
+            title="🔵 Ingresos y Gastos (tamaño proporcional al monto)",
+        )
+        fig_scatter.update_traces(opacity=0.8)
+        fig_scatter.update_layout(template="plotly_dark", xaxis_title="Fecha", yaxis_title="Monto")
+        st.plotly_chart(fig_scatter, use_container_width=True)
 
         # --- Top 10 gastos ---
         st.markdown("### 🏆 Top 10 gastos filtrados")
