@@ -175,8 +175,48 @@ if link:
             st.error("❌ El archivo no contiene las columnas necesarias: Fecha, Cantidad, Ingreso /Egreso, Concepto.")
             st.stop()
 
-        # Normalización de datos
+        # Normalización de datos - Mejorado para manejar diferentes formatos de fecha
+        # Guardamos una copia de la columna original para procesamiento
+        df["Fecha_Original"] = df["Fecha"].astype(str)
+        
+        # Primero intentamos con dayfirst=True
         df["Fecha"] = pd.to_datetime(df["Fecha"], dayfirst=True, errors="coerce")
+        
+        # Para las fechas que no se pudieron convertir, intentar con formato DD-MM-YY
+        # interpretando YY como 20YY (siglo 21)
+        fechas_invalidas_mask = df["Fecha"].isna()
+        if fechas_invalidas_mask.any():
+            for idx in df[fechas_invalidas_mask].index:
+                fecha_str = str(df.loc[idx, "Fecha_Original"]).strip()
+                try:
+                    # Intentar parsear formato DD-MM-YY o DD/MM/YY
+                    if "-" in fecha_str:
+                        partes = fecha_str.split("-")
+                    elif "/" in fecha_str:
+                        partes = fecha_str.split("/")
+                    else:
+                        continue
+                    
+                    if len(partes) == 3:
+                        dia, mes, año = partes
+                        # Si el año tiene 2 dígitos, convertir a 20YY
+                        if len(año) == 2:
+                            año = "20" + año
+                        fecha_corregida = f"{dia}-{mes}-{año}"
+                        df.loc[idx, "Fecha"] = pd.to_datetime(fecha_corregida, format="%d-%m-%Y", errors="coerce")
+                except:
+                    continue
+        
+        # Eliminar columna temporal
+        df.drop(columns=["Fecha_Original"], inplace=True)
+        
+        # Verificar si aún quedan fechas inválidas
+        fechas_invalidas = df[df["Fecha"].isna()]
+        if not fechas_invalidas.empty:
+            st.warning(f"⚠️ Se encontraron {len(fechas_invalidas)} filas con fechas inválidas después del procesamiento. Revisa el formato en tu Google Sheet.")
+            with st.expander("Ver filas con fechas inválidas"):
+                st.dataframe(fechas_invalidas)
+        
         df["Cantidad"] = df["Cantidad"].astype(str).str.replace(",", ".").astype(float)
         df.dropna(subset=["Fecha", "Cantidad"], inplace=True)
 
@@ -290,11 +330,42 @@ if link:
             st.markdown("### 🛒 Top 10 gastos por concepto")
             gastos_filtrados = df_final[df_final["Cantidad"] < 0]
             if not gastos_filtrados.empty:
+                # Función para agrupar conceptos similares
+                def agrupar_concepto(concepto):
+                    concepto_lower = normalizar_texto(concepto)
+                    # Lista de palabras clave para agrupar (orden importa!)
+                    # Primero verificamos OXXO para que tenga prioridad
+                    if "oxxo" in concepto_lower:
+                        return "OXXO"
+                    # Servicios del depa (agua, luz, gas, internet) - solo si NO es de tienda
+                    elif ("agua" in concepto_lower or "luz" in concepto_lower or "cfe" in concepto_lower or 
+                          "internet" in concepto_lower or
+                          ("gas" in concepto_lower and "gasolina" not in concepto_lower and "combustible" not in concepto_lower)):
+                        return "Servicios Depa"
+                    elif "super" in concepto_lower or "soriana" in concepto_lower or "walmart" in concepto_lower or "heb" in concepto_lower:
+                        return "Supermercado"
+                    elif "gasolina" in concepto_lower or "combustible" in concepto_lower:
+                        return "Gasolina"
+                    elif "farmacia" in concepto_lower or "medicamento" in concepto_lower:
+                        return "Farmacia"
+                    elif "restaurante" in concepto_lower or "comida" in concepto_lower or "restaurant" in concepto_lower:
+                        return "Restaurante"
+                    elif "uber" in concepto_lower or "taxi" in concepto_lower or "transporte" in concepto_lower:
+                        return "Transporte"
+                    elif "netflix" in concepto_lower or "spotify" in concepto_lower or "suscripcion" in concepto_lower:
+                        return "Suscripciones"
+                    elif "renta" in concepto_lower or "alquiler" in concepto_lower:
+                        return "Renta"
+                    else:
+                        return concepto.strip().title()
+                
+                # Crear DataFrame con categorías agrupadas
+                gastos_con_categoria = gastos_filtrados.copy()
+                gastos_con_categoria["ConceptoAgrupado"] = gastos_con_categoria["Concepto"].fillna("Sin descripción").apply(agrupar_concepto)
+                
                 resumen_gastos = (
-                    gastos_filtrados.assign(
-                        Concepto=lambda x: x["Concepto"].fillna("Sin descripción").str.strip().str.lower()
-                    )
-                    .groupby("Concepto", as_index=False)["Cantidad"]
+                    gastos_con_categoria
+                    .groupby("ConceptoAgrupado", as_index=False)["Cantidad"]
                     .sum()
                     .sort_values(by="Cantidad")
                     .head(10)
@@ -302,15 +373,51 @@ if link:
                 resumen_gastos["Cantidad"] = resumen_gastos["Cantidad"].abs()
                 fig_pie_gastos = px.pie(
                     resumen_gastos,
-                    names="Concepto",
+                    names="ConceptoAgrupado",
                     values="Cantidad",
-                    title="Top 10 gastos por concepto",
+                    title="Top 10 gastos por concepto (click para ver desglose)",
                     color_discrete_sequence=px.colors.sequential.Magma_r,
                     hole=0.4
                 )
                 fig_pie_gastos.update_traces(textinfo="percent+label")
                 fig_pie_gastos.update_layout(template="plotly_dark")
-                st.plotly_chart(fig_pie_gastos, use_container_width=True)
+                st.plotly_chart(fig_pie_gastos, use_container_width=True, key="pie_chart")
+                
+                # Selector para ver desglose
+                categoria_seleccionada = st.selectbox(
+                    "🔍 Ver desglose de:",
+                    options=["Selecciona una categoría..."] + resumen_gastos["ConceptoAgrupado"].tolist(),
+                    key="selector_pie"
+                )
+                
+                if categoria_seleccionada != "Selecciona una categoría...":
+                    desglose = gastos_con_categoria[gastos_con_categoria["ConceptoAgrupado"] == categoria_seleccionada].copy()
+                    desglose["Cantidad"] = desglose["Cantidad"].abs()
+                    desglose_agrupado = desglose.groupby("Concepto", as_index=False).agg({
+                        "Cantidad": "sum",
+                        "Fecha": "count"
+                    }).rename(columns={"Fecha": "Número de veces"})
+                    desglose_agrupado = desglose_agrupado.sort_values("Cantidad", ascending=False)
+                    
+                    st.markdown(f"#### 📋 Desglose de: **{categoria_seleccionada}**")
+                    st.markdown(f"**Total: ${desglose_agrupado['Cantidad'].sum():,.2f}**")
+                    st.dataframe(desglose_agrupado, use_container_width=True, hide_index=True)
+                    
+                    # Selector adicional para ver transacciones individuales de un concepto específico
+                    conceptos_con_multiples = desglose_agrupado[desglose_agrupado["Número de veces"] > 1]["Concepto"].tolist()
+                    if conceptos_con_multiples:
+                        st.markdown("---")
+                        concepto_detalle = st.selectbox(
+                            "🔎 Ver transacciones individuales de:",
+                            options=["Selecciona un concepto..."] + conceptos_con_multiples,
+                            key="selector_detalle_pie"
+                        )
+                        
+                        if concepto_detalle != "Selecciona un concepto...":
+                            transacciones_individuales = desglose[desglose["Concepto"] == concepto_detalle][["Fecha", "Cantidad", "Ingreso /Egreso"]].copy()
+                            transacciones_individuales = transacciones_individuales.sort_values("Fecha", ascending=False)
+                            st.markdown(f"##### 🧾 Transacciones de: **{concepto_detalle}**")
+                            st.dataframe(transacciones_individuales, use_container_width=True, hide_index=True)
             else:
                 st.info("⚠️ No hay gastos para mostrar en el gráfico.")
 
@@ -358,12 +465,42 @@ if link:
         # --- Gráfico de barras horizontales Top 10 gastos ---
         st.markdown("### 📊 Top 10 gastos filtrados (barras horizontales)")
         if not gastos_filtrados.empty:
+            # Función para agrupar conceptos similares (reutilizamos la misma lógica)
+            def agrupar_concepto(concepto):
+                concepto_lower = normalizar_texto(concepto)
+                # Primero verificamos OXXO para que tenga prioridad
+                if "oxxo" in concepto_lower:
+                    return "OXXO"
+                # Servicios del depa (agua, luz, gas, internet) - solo si NO es de tienda
+                elif ("agua" in concepto_lower or "luz" in concepto_lower or "cfe" in concepto_lower or 
+                      "internet" in concepto_lower or
+                      ("gas" in concepto_lower and "gasolina" not in concepto_lower and "combustible" not in concepto_lower)):
+                    return "Servicios Depa"
+                elif "super" in concepto_lower or "soriana" in concepto_lower or "walmart" in concepto_lower or "heb" in concepto_lower:
+                    return "Supermercado"
+                elif "gasolina" in concepto_lower or "combustible" in concepto_lower:
+                    return "Gasolina"
+                elif "farmacia" in concepto_lower or "medicamento" in concepto_lower:
+                    return "Farmacia"
+                elif "restaurante" in concepto_lower or "comida" in concepto_lower or "restaurant" in concepto_lower:
+                    return "Restaurante"
+                elif "uber" in concepto_lower or "taxi" in concepto_lower or "transporte" in concepto_lower:
+                    return "Transporte"
+                elif "netflix" in concepto_lower or "spotify" in concepto_lower or "suscripcion" in concepto_lower:
+                    return "Suscripciones"
+                elif "renta" in concepto_lower or "alquiler" in concepto_lower:
+                    return "Renta"
+                else:
+                    return concepto.strip().title()
+            
+            # Crear DataFrame con categorías agrupadas
+            gastos_con_categoria_barras = gastos_filtrados.copy()
+            gastos_con_categoria_barras["ConceptoAgrupado"] = gastos_con_categoria_barras["Concepto"].fillna("Sin descripción").apply(agrupar_concepto)
+            
             # Agrupamos por concepto y sumamos los gastos
             resumen_gastos_barras = (
-                gastos_filtrados.assign(
-                    Concepto=lambda x: x["Concepto"].fillna("Sin descripción").str.strip().str.lower()
-                )
-                .groupby("Concepto", as_index=False)["Cantidad"]
+                gastos_con_categoria_barras
+                .groupby("ConceptoAgrupado", as_index=False)["Cantidad"]
                 .sum()
                 .sort_values(by="Cantidad")
                 .head(10)
@@ -374,15 +511,51 @@ if link:
             fig_barras = px.bar(
                 resumen_gastos_barras,
                 x="Cantidad",
-                y="Concepto",
+                y="ConceptoAgrupado",
                 orientation="h",
                 text="Cantidad",
                 color="Cantidad",
                 color_continuous_scale=px.colors.sequential.Magma_r,
-                title="Top 10 gastos filtrados",
+                title="Top 10 gastos filtrados (click para ver desglose)",
             )
             fig_barras.update_layout(template="plotly_dark", yaxis={'categoryorder':'total ascending'})
-            st.plotly_chart(fig_barras, use_container_width=True)
+            st.plotly_chart(fig_barras, use_container_width=True, key="bar_chart")
+            
+            # Selector para ver desglose
+            categoria_seleccionada_barras = st.selectbox(
+                "🔍 Ver desglose de:",
+                options=["Selecciona una categoría..."] + resumen_gastos_barras.sort_values("Cantidad", ascending=False)["ConceptoAgrupado"].tolist(),
+                key="selector_barras"
+            )
+            
+            if categoria_seleccionada_barras != "Selecciona una categoría...":
+                desglose_barras = gastos_con_categoria_barras[gastos_con_categoria_barras["ConceptoAgrupado"] == categoria_seleccionada_barras].copy()
+                desglose_barras["Cantidad"] = desglose_barras["Cantidad"].abs()
+                desglose_agrupado_barras = desglose_barras.groupby("Concepto", as_index=False).agg({
+                    "Cantidad": "sum",
+                    "Fecha": "count"
+                }).rename(columns={"Fecha": "Número de veces"})
+                desglose_agrupado_barras = desglose_agrupado_barras.sort_values("Cantidad", ascending=False)
+                
+                st.markdown(f"#### 📋 Desglose de: **{categoria_seleccionada_barras}**")
+                st.markdown(f"**Total: ${desglose_agrupado_barras['Cantidad'].sum():,.2f}**")
+                st.dataframe(desglose_agrupado_barras, use_container_width=True, hide_index=True)
+                
+                # Selector adicional para ver transacciones individuales de un concepto específico
+                conceptos_con_multiples_barras = desglose_agrupado_barras[desglose_agrupado_barras["Número de veces"] > 1]["Concepto"].tolist()
+                if conceptos_con_multiples_barras:
+                    st.markdown("---")
+                    concepto_detalle_barras = st.selectbox(
+                        "🔎 Ver transacciones individuales de:",
+                        options=["Selecciona un concepto..."] + conceptos_con_multiples_barras,
+                        key="selector_detalle_barras"
+                    )
+                    
+                    if concepto_detalle_barras != "Selecciona un concepto...":
+                        transacciones_individuales_barras = desglose_barras[desglose_barras["Concepto"] == concepto_detalle_barras][["Fecha", "Cantidad", "Ingreso /Egreso"]].copy()
+                        transacciones_individuales_barras = transacciones_individuales_barras.sort_values("Fecha", ascending=False)
+                        st.markdown(f"##### 🧾 Transacciones de: **{concepto_detalle_barras}**")
+                        st.dataframe(transacciones_individuales_barras, use_container_width=True, hide_index=True)
         else:
             st.info("⚠️ No hay gastos para mostrar en la gráfica de barras.")
 else:
