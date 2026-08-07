@@ -59,31 +59,61 @@ def obtener_url_editable_hoja(sheet_id, nombre_hoja=None, gid="0"):
 # --------------------------
 # FUNCIÓN PARA CARGAR DATOS (una sola hoja)
 # --------------------------
+COLUMNAS_REQUERIDAS = {"Fecha", "Cantidad", "Ingreso /Egreso", "Concepto"}
+
+
+def _parece_html(data):
+    """Detecta si lo que regresó pd.read_csv en realidad fue una página de error/HTML de Google"""
+    columnas_texto = " ".join(str(c) for c in data.columns).lower()
+    return "html" in columnas_texto or "doctype" in columnas_texto or data.shape[1] <= 1
+
+
 @st.cache_data
 def cargar_datos_google_public(sheet_id, nombre_hoja):
-    """Carga una pestaña específica de un Google Sheet público por su nombre"""
+    """Carga una pestaña específica de un Google Sheet público por su nombre.
+    Regresa (DataFrame, mensaje_error). Si mensaje_error no es None, la carga falló."""
     try:
         url = construir_url_hoja_por_nombre(sheet_id, nombre_hoja)
         data = pd.read_csv(url)
-        return data
+
+        if _parece_html(data):
+            return pd.DataFrame(), (
+                f"La pestaña '{nombre_hoja}' no regresó datos válidos (parece que Google mandó una "
+                f"página de error en vez del CSV). Revisa que el nombre de la pestaña sea EXACTO "
+                f"(mayúsculas/espacios) y que el documento esté compartido como "
+                f"'Cualquiera con el enlace puede ver'."
+            )
+
+        columnas_faltantes = COLUMNAS_REQUERIDAS - set(data.columns)
+        if columnas_faltantes:
+            return pd.DataFrame(), (
+                f"La pestaña '{nombre_hoja}' se cargó, pero le faltan columnas: {', '.join(columnas_faltantes)}. "
+                f"Columnas encontradas: {', '.join(str(c) for c in data.columns)}."
+            )
+
+        return data, None
     except Exception as e:
-        st.error(f"❌ Error cargando los datos de '{nombre_hoja}': {e}")
-        return pd.DataFrame()
+        return pd.DataFrame(), f"Error cargando la pestaña '{nombre_hoja}': {e}"
 
 
 @st.cache_data
 def cargar_todas_las_cuentas(sheet_id, hojas_cuentas):
-    """Carga todas las hojas configuradas y las junta en un solo DataFrame con columna 'Cuenta'"""
+    """Carga todas las hojas configuradas y las junta en un solo DataFrame con columna 'Cuenta'.
+    Regresa (df_combinado, lista_de_errores). Las hojas que fallan se omiten pero no tumban la app."""
     dfs = []
+    errores = []
     for cuenta, nombre_hoja in hojas_cuentas.items():
-        df_hoja = cargar_datos_google_public(sheet_id, nombre_hoja)
-        if not df_hoja.empty:
-            df_hoja = df_hoja.copy()
-            df_hoja["Cuenta"] = cuenta
-            dfs.append(df_hoja)
+        df_hoja, error = cargar_datos_google_public(sheet_id, nombre_hoja)
+        if error:
+            errores.append(error)
+            continue
+        df_hoja = df_hoja.copy()
+        df_hoja["Cuenta"] = cuenta
+        dfs.append(df_hoja)
+
     if dfs:
-        return pd.concat(dfs, ignore_index=True)
-    return pd.DataFrame()
+        return pd.concat(dfs, ignore_index=True), errores
+    return pd.DataFrame(), errores
 
 
 # --------------------------
@@ -228,14 +258,13 @@ if link:
         st.error("❌ No se pudo extraer el ID del documento a partir del enlace proporcionado.")
         st.stop()
 
-    df = cargar_todas_las_cuentas(sheet_id, HOJAS_CUENTAS)
+    df, errores_carga = cargar_todas_las_cuentas(sheet_id, HOJAS_CUENTAS)
+
+    if errores_carga:
+        for err in errores_carga:
+            st.warning(f"⚠️ {err}")
 
     if not df.empty:
-        columnas_requeridas = {"Fecha", "Cantidad", "Ingreso /Egreso", "Concepto"}
-        if not columnas_requeridas.issubset(df.columns):
-            st.error("❌ El archivo no contiene las columnas necesarias: Fecha, Cantidad, Ingreso /Egreso, Concepto.")
-            st.stop()
-
         # Normalización de datos - Mejorado para manejar diferentes formatos de fecha
         df["Fecha_Original"] = df["Fecha"].astype(str)
         df["Fecha"] = pd.to_datetime(df["Fecha"], dayfirst=True, errors="coerce")
