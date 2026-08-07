@@ -16,11 +16,11 @@ USUARIOS = {
     "jorgevidea": "jorgevidea10"
 }
 
-# Mapeo de cuentas -> nombre de la hoja en Google Sheets
+# Mapeo de cuentas -> gid de la pestaña en Google Sheets
 HOJAS_CUENTAS = {
-    "Banorte": "Hoja1",
-    "BBVA": "Hoja 3",
-    "Nu": "Hoja 5",
+    "Banorte": "0",
+    "BBVA": "1882819796",
+    "Nu": "2094793961",
 }
 
 # Inicializar session_state
@@ -42,18 +42,16 @@ def extraer_sheet_id(link_hoja):
         return None
 
 
-def construir_url_hoja_por_nombre(sheet_id, nombre_hoja):
-    """Arma la URL de exportación CSV de una pestaña específica por su nombre"""
-    from urllib.parse import quote
-    nombre_codificado = quote(nombre_hoja)
-    return f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&sheet={nombre_codificado}"
+def construir_url_hoja_por_gid(sheet_id, gid):
+    """Arma la URL de exportación CSV de una pestaña específica por su gid"""
+    return f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
 
 
-def obtener_url_editable_hoja(sheet_id, nombre_hoja=None, gid="0"):
-    """Genera el link editable del Google Sheet (a la hoja indicada si se conoce el gid, si no al doc general)"""
+def obtener_url_editable_hoja(sheet_id, gid="0"):
+    """Genera el link editable del Google Sheet apuntando a la pestaña indicada"""
     if not sheet_id:
         return None
-    return f"https://docs.google.com/spreadsheets/d/{sheet_id}/edit"
+    return f"https://docs.google.com/spreadsheets/d/{sheet_id}/edit#gid={gid}"
 
 
 # --------------------------
@@ -69,43 +67,42 @@ def _parece_html(data):
 
 
 @st.cache_data
-def cargar_datos_google_public(sheet_id, nombre_hoja):
-    """Carga una pestaña específica de un Google Sheet público por su nombre.
+def cargar_datos_google_public(sheet_id, gid):
+    """Carga una pestaña específica de un Google Sheet público por su gid.
     Regresa (DataFrame, mensaje_error). Si mensaje_error no es None, la carga falló."""
     try:
-        url = construir_url_hoja_por_nombre(sheet_id, nombre_hoja)
+        url = construir_url_hoja_por_gid(sheet_id, gid)
         data = pd.read_csv(url)
 
         if _parece_html(data):
             return pd.DataFrame(), (
-                f"La pestaña '{nombre_hoja}' no regresó datos válidos (parece que Google mandó una "
-                f"página de error en vez del CSV). Revisa que el nombre de la pestaña sea EXACTO "
-                f"(mayúsculas/espacios) y que el documento esté compartido como "
+                f"La pestaña con gid '{gid}' no regresó datos válidos (parece que Google mandó una "
+                f"página de error en vez del CSV). Revisa que el documento esté compartido como "
                 f"'Cualquiera con el enlace puede ver'."
             )
 
         columnas_faltantes = COLUMNAS_REQUERIDAS - set(data.columns)
         if columnas_faltantes:
             return pd.DataFrame(), (
-                f"La pestaña '{nombre_hoja}' se cargó, pero le faltan columnas: {', '.join(columnas_faltantes)}. "
+                f"La pestaña con gid '{gid}' se cargó, pero le faltan columnas: {', '.join(columnas_faltantes)}. "
                 f"Columnas encontradas: {', '.join(str(c) for c in data.columns)}."
             )
 
         return data, None
     except Exception as e:
-        return pd.DataFrame(), f"Error cargando la pestaña '{nombre_hoja}': {e}"
+        return pd.DataFrame(), f"Error cargando la pestaña con gid '{gid}': {e}"
 
 
 @st.cache_data
 def cargar_todas_las_cuentas(sheet_id, hojas_cuentas):
-    """Carga todas las hojas configuradas y las junta en un solo DataFrame con columna 'Cuenta'.
+    """Carga todas las hojas configuradas (por gid) y las junta en un solo DataFrame con columna 'Cuenta'.
     Regresa (df_combinado, lista_de_errores). Las hojas que fallan se omiten pero no tumban la app."""
     dfs = []
     errores = []
-    for cuenta, nombre_hoja in hojas_cuentas.items():
-        df_hoja, error = cargar_datos_google_public(sheet_id, nombre_hoja)
+    for cuenta, gid in hojas_cuentas.items():
+        df_hoja, error = cargar_datos_google_public(sheet_id, gid)
         if error:
-            errores.append(error)
+            errores.append(f"[{cuenta}] {error}")
             continue
         df_hoja = df_hoja.copy()
         df_hoja["Cuenta"] = cuenta
@@ -339,7 +336,8 @@ if link:
             st.dataframe(df_sorted[columnas_preview].head(5), use_container_width=True)
 
         with col_button:
-            url_editable = obtener_url_editable_hoja(sheet_id)
+            gid_actual = HOJAS_CUENTAS.get(cuenta_seleccionada, "0")
+            url_editable = obtener_url_editable_hoja(sheet_id, gid_actual)
             if url_editable:
                 st.markdown(f'<a href="{url_editable}" target="_blank"><button style="background-color:#4CAF50;color:white;padding:10px 20px;border:none;border-radius:5px;cursor:pointer;width:100%;margin-top:10px;">✏️ Editar Registros</button></a>', unsafe_allow_html=True)
             else:
@@ -624,6 +622,6 @@ if link:
         else:
             st.info("⚠️ No hay gastos para mostrar en la gráfica de barras.")
     else:
-        st.error("❌ No se pudo cargar información de ninguna de las hojas configuradas (Hoja1, Hoja 3, Hoja 5). Revisa que existan y sean públicas.")
+        st.error("❌ No se pudo cargar información de ninguna de las hojas configuradas (Banorte, BBVA, Nu). Revisa que existan y sean públicas.")
 else:
     st.warning("⚠️ Por favor ingresa un enlace válido de Google Sheets para comenzar.")
