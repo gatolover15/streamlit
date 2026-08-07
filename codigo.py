@@ -117,10 +117,9 @@ def cargar_todas_las_cuentas(sheet_id, hojas_cuentas):
 
 
 @st.cache_data
-def cargar_conceptos_viaticos(sheet_id, gid):
-    """Carga la hoja de viáticos y regresa el set de conceptos normalizados (sin tildes, minúsculas).
-    Solo requiere que exista la columna 'Concepto'; no valida Fecha/Cantidad porque puede
-    tener estructura distinta a las cuentas bancarias. Regresa (set_conceptos, mensaje_error)."""
+def cargar_pares_viaticos(sheet_id, gid):
+    """Carga la hoja de viáticos y regresa el set de pares (fecha, monto_absoluto) para hacer match.
+    Requiere columnas 'Fecha' y 'Cantidad'. Regresa (set_pares, mensaje_error)."""
     try:
         url = construir_url_hoja_por_gid(sheet_id, gid)
         data = pd.read_csv(url)
@@ -130,17 +129,21 @@ def cargar_conceptos_viaticos(sheet_id, gid):
                 "La hoja de viáticos no regresó datos válidos. Revisa que el documento esté "
                 "compartido como 'Cualquiera con el enlace puede ver'."
             )
-        if "Concepto" not in data.columns:
+        columnas_faltantes = {"Fecha", "Cantidad"} - set(data.columns)
+        if columnas_faltantes:
             return set(), (
-                f"La hoja de viáticos no tiene columna 'Concepto'. Columnas encontradas: "
-                f"{', '.join(str(c) for c in data.columns)}."
+                f"La hoja de viáticos no tiene las columnas necesarias: {', '.join(columnas_faltantes)}. "
+                f"Columnas encontradas: {', '.join(str(c) for c in data.columns)}."
             )
 
-        conceptos = set(
-            data["Concepto"].dropna().apply(normalizar_texto)
+        data = parsear_columna_fecha(data, "Fecha")
+        data = limpiar_columna_cantidad(data, "Cantidad")
+        data = data.dropna(subset=["Fecha", "Cantidad"])
+
+        pares = set(
+            zip(data["Fecha"].dt.date, data["Cantidad"].abs().round(2))
         )
-        conceptos.discard("")
-        return conceptos, None
+        return pares, None
     except Exception as e:
         return set(), f"Error cargando la hoja de viáticos: {e}"
 
@@ -212,6 +215,48 @@ def agrupar_concepto(concepto):
         return "Renta"
     else:
         return concepto.strip().title()
+
+
+def parsear_columna_fecha(df, columna="Fecha"):
+    """Convierte la columna de fecha a datetime, con reintento para formatos DD-MM-YY / DD/MM/YY.
+    Modifica el DataFrame in-place."""
+    fecha_original = df[columna].astype(str)
+    df[columna] = pd.to_datetime(df[columna], dayfirst=True, errors="coerce")
+
+    fechas_invalidas_mask = df[columna].isna()
+    if fechas_invalidas_mask.any():
+        for idx in df[fechas_invalidas_mask].index:
+            fecha_str = str(fecha_original.loc[idx]).strip()
+            try:
+                if "-" in fecha_str:
+                    partes = fecha_str.split("-")
+                elif "/" in fecha_str:
+                    partes = fecha_str.split("/")
+                else:
+                    continue
+
+                if len(partes) == 3:
+                    dia, mes_p, año_p = partes
+                    if len(año_p) == 2:
+                        año_p = "20" + año_p
+                    fecha_corregida = f"{dia}-{mes_p}-{año_p}"
+                    df.loc[idx, columna] = pd.to_datetime(fecha_corregida, format="%d-%m-%Y", errors="coerce")
+            except Exception:
+                continue
+    return df
+
+
+def limpiar_columna_cantidad(df, columna="Cantidad"):
+    """Limpia $ y espacios, maneja comas como separador decimal, y convierte a numérico
+    (lo que no se pueda convertir queda como NaN). Modifica el DataFrame in-place."""
+    cantidad_raw = df[columna].astype(str).str.strip()
+    cantidad_limpia = (
+        cantidad_raw
+        .str.replace(r"[$\s]", "", regex=True)
+        .str.replace(",", ".", regex=False)
+    )
+    df[columna] = pd.to_numeric(cantidad_limpia, errors="coerce")
+    return df
 
 
 # --------------------------
@@ -295,31 +340,7 @@ if link:
 
     if not df.empty:
         # Normalización de datos - Mejorado para manejar diferentes formatos de fecha
-        df["Fecha_Original"] = df["Fecha"].astype(str)
-        df["Fecha"] = pd.to_datetime(df["Fecha"], dayfirst=True, errors="coerce")
-
-        fechas_invalidas_mask = df["Fecha"].isna()
-        if fechas_invalidas_mask.any():
-            for idx in df[fechas_invalidas_mask].index:
-                fecha_str = str(df.loc[idx, "Fecha_Original"]).strip()
-                try:
-                    if "-" in fecha_str:
-                        partes = fecha_str.split("-")
-                    elif "/" in fecha_str:
-                        partes = fecha_str.split("/")
-                    else:
-                        continue
-
-                    if len(partes) == 3:
-                        dia, mes_p, año_p = partes
-                        if len(año_p) == 2:
-                            año_p = "20" + año_p
-                        fecha_corregida = f"{dia}-{mes_p}-{año_p}"
-                        df.loc[idx, "Fecha"] = pd.to_datetime(fecha_corregida, format="%d-%m-%Y", errors="coerce")
-                except Exception:
-                    continue
-
-        df.drop(columns=["Fecha_Original"], inplace=True)
+        df = parsear_columna_fecha(df, "Fecha")
 
         fechas_invalidas = df[df["Fecha"].isna()]
         if not fechas_invalidas.empty:
@@ -327,15 +348,7 @@ if link:
             with st.expander("Ver filas con fechas inválidas"):
                 st.dataframe(fechas_invalidas)
 
-        # Limpieza robusta de la columna Cantidad: quita $ y espacios, maneja comas como
-        # separador decimal, y convierte lo que no se pueda a NaN en vez de tronar la app.
-        cantidad_raw = df["Cantidad"].astype(str).str.strip()
-        cantidad_limpia = (
-            cantidad_raw
-            .str.replace(r"[$\s]", "", regex=True)
-            .str.replace(",", ".", regex=False)
-        )
-        df["Cantidad"] = pd.to_numeric(cantidad_limpia, errors="coerce")
+        df = limpiar_columna_cantidad(df, "Cantidad")
 
         cantidades_invalidas = df[df["Cantidad"].isna()]
         if not cantidades_invalidas.empty:
@@ -410,14 +423,14 @@ if link:
         # --------------------------
         # VIÁTICOS APLICADOS
         # --------------------------
-        conceptos_viaticos, error_viaticos = cargar_conceptos_viaticos(sheet_id, GID_VIATICOS)
+        pares_viaticos, error_viaticos = cargar_pares_viaticos(sheet_id, GID_VIATICOS)
         if error_viaticos:
             st.warning(f"⚠️ [Viáticos] {error_viaticos}")
 
         excluir_viaticos = st.checkbox(
-            "🧾 Viáticos aplicados — excluir movimientos que coincidan con conceptos de la hoja de viáticos",
+            "🧾 Viáticos aplicados — excluir movimientos cuya Fecha y Monto coincidan exactamente con la hoja de viáticos",
             value=False,
-            disabled=len(conceptos_viaticos) == 0
+            disabled=len(pares_viaticos) == 0
         )
 
         # --------------------------
@@ -425,13 +438,17 @@ if link:
         # --------------------------
         df_filtered = filtrar_datos(df_cuenta, start_date, end_date, razon, excluir, mes, año)
 
-        if excluir_viaticos and conceptos_viaticos:
-            mask_viatico = df_filtered["Concepto"].apply(normalizar_texto).isin(conceptos_viaticos)
+        if excluir_viaticos and pares_viaticos:
+            pares_movimientos = list(zip(df_filtered["Fecha"].dt.date, df_filtered["Cantidad"].abs().round(2)))
+            mask_viatico = pd.Series(
+                [par in pares_viaticos for par in pares_movimientos],
+                index=df_filtered.index
+            )
             movimientos_viaticos = df_filtered[mask_viatico]
             if not movimientos_viaticos.empty:
                 st.info(
                     f"🧾 Se excluyeron {len(movimientos_viaticos)} movimientos por coincidir con viáticos "
-                    f"(total: ${movimientos_viaticos['Cantidad'].abs().sum():,.2f})."
+                    f"(Fecha + Monto igual) — total: ${movimientos_viaticos['Cantidad'].abs().sum():,.2f}."
                 )
                 with st.expander("Ver movimientos excluidos por viáticos"):
                     st.dataframe(movimientos_viaticos, use_container_width=True)
