@@ -16,6 +16,13 @@ USUARIOS = {
     "jorgevidea": "jorgevidea10"
 }
 
+# Mapeo de cuentas -> nombre de la hoja en Google Sheets
+HOJAS_CUENTAS = {
+    "Banorte": "Hoja1",
+    "BBVA": "Hoja 3",
+    "Nu": "Hoja 5",
+}
+
 # Inicializar session_state
 if "autenticado" not in st.session_state:
     st.session_state.autenticado = False
@@ -23,23 +30,61 @@ if "link_sheets" not in st.session_state:
     st.session_state.link_sheets = ""
 
 # --------------------------
-# FUNCIÓN PARA CARGAR DATOS
+# FUNCIONES PARA CONSTRUIR URLS
+# --------------------------
+def extraer_sheet_id(link_hoja):
+    """Extrae el ID del documento de Google Sheets a partir de cualquier link"""
+    try:
+        if "/d/" in link_hoja:
+            return link_hoja.split("/d/")[1].split("/")[0]
+        return None
+    except Exception:
+        return None
+
+
+def construir_url_hoja_por_nombre(sheet_id, nombre_hoja):
+    """Arma la URL de exportación CSV de una pestaña específica por su nombre"""
+    from urllib.parse import quote
+    nombre_codificado = quote(nombre_hoja)
+    return f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&sheet={nombre_codificado}"
+
+
+def obtener_url_editable_hoja(sheet_id, nombre_hoja=None, gid="0"):
+    """Genera el link editable del Google Sheet (a la hoja indicada si se conoce el gid, si no al doc general)"""
+    if not sheet_id:
+        return None
+    return f"https://docs.google.com/spreadsheets/d/{sheet_id}/edit"
+
+
+# --------------------------
+# FUNCIÓN PARA CARGAR DATOS (una sola hoja)
 # --------------------------
 @st.cache_data
-def cargar_datos_google_public(link_hoja):
-    """Carga un Google Sheet público (link normal o CSV export)"""
+def cargar_datos_google_public(sheet_id, nombre_hoja):
+    """Carga una pestaña específica de un Google Sheet público por su nombre"""
     try:
-        if "export?format=csv" not in link_hoja:
-            sheet_id = link_hoja.split("/d/")[1].split("/")[0]
-            gid = "0"
-            if "gid=" in link_hoja:
-                gid = link_hoja.split("gid=")[1].split("&")[0]
-            link_hoja = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
-        data = pd.read_csv(link_hoja)
+        url = construir_url_hoja_por_nombre(sheet_id, nombre_hoja)
+        data = pd.read_csv(url)
         return data
     except Exception as e:
-        st.error(f"❌ Error cargando los datos: {e}")
+        st.error(f"❌ Error cargando los datos de '{nombre_hoja}': {e}")
         return pd.DataFrame()
+
+
+@st.cache_data
+def cargar_todas_las_cuentas(sheet_id, hojas_cuentas):
+    """Carga todas las hojas configuradas y las junta en un solo DataFrame con columna 'Cuenta'"""
+    dfs = []
+    for cuenta, nombre_hoja in hojas_cuentas.items():
+        df_hoja = cargar_datos_google_public(sheet_id, nombre_hoja)
+        if not df_hoja.empty:
+            df_hoja = df_hoja.copy()
+            df_hoja["Cuenta"] = cuenta
+            dfs.append(df_hoja)
+    if dfs:
+        return pd.concat(dfs, ignore_index=True)
+    return pd.DataFrame()
+
 
 # --------------------------
 # FUNCIÓN PARA NORMALIZAR TEXTO (sin tildes)
@@ -50,7 +95,6 @@ def normalizar_texto(texto):
     if pd.isna(texto):
         return ""
     texto = str(texto).lower()
-    # Normaliza y elimina tildes
     texto = unicodedata.normalize('NFD', texto)
     texto = ''.join(char for char in texto if unicodedata.category(char) != 'Mn')
     return texto
@@ -70,35 +114,46 @@ def filtrar_datos(df, start_date, end_date, razon, excluir, mes, año):
     if end_date:
         df_filtered = df_filtered[df_filtered["Fecha"] <= pd.to_datetime(end_date)]
     if razon:
-        # Normalizar el texto de búsqueda
         razon_normalizada = normalizar_texto(razon)
-        # Crear columna temporal normalizada para comparación
         df_filtered = df_filtered[df_filtered["Concepto"].apply(normalizar_texto).str.contains(razon_normalizada, na=False)]
     if excluir:
         palabras_excluir = [x.strip() for x in excluir.split(",") if x.strip()]
         if palabras_excluir:
-            # Normalizar cada palabra a excluir
             palabras_excluir_normalizadas = [normalizar_texto(palabra) for palabra in palabras_excluir]
             patron = "|".join(palabras_excluir_normalizadas)
             df_filtered = df_filtered[~df_filtered["Concepto"].apply(normalizar_texto).str.contains(patron, na=False)]
 
     return df_filtered
 
+
 # --------------------------
-# FUNCIÓN PARA EXTRAER URL EDITABLE
+# FUNCIÓN PARA AGRUPAR CONCEPTOS SIMILARES
 # --------------------------
-def obtener_url_editable(link_csv):
-    """Extrae la URL editable del Google Sheet desde el link de exportación CSV"""
-    try:
-        if "/d/" in link_csv:
-            sheet_id = link_csv.split("/d/")[1].split("/")[0]
-            gid = "0"
-            if "gid=" in link_csv:
-                gid = link_csv.split("gid=")[1].split("&")[0]
-            return f"https://docs.google.com/spreadsheets/d/{sheet_id}/edit#gid={gid}"
-        return None
-    except:
-        return None
+def agrupar_concepto(concepto):
+    concepto_lower = normalizar_texto(concepto)
+    if "oxxo" in concepto_lower:
+        return "OXXO"
+    elif ("agua" in concepto_lower or "luz" in concepto_lower or "cfe" in concepto_lower or
+          "internet" in concepto_lower or
+          ("gas" in concepto_lower and "gasolina" not in concepto_lower and "combustible" not in concepto_lower)):
+        return "Servicios Depa"
+    elif "super" in concepto_lower or "soriana" in concepto_lower or "walmart" in concepto_lower or "heb" in concepto_lower:
+        return "Supermercado"
+    elif "gasolina" in concepto_lower or "combustible" in concepto_lower:
+        return "Gasolina"
+    elif "farmacia" in concepto_lower or "medicamento" in concepto_lower:
+        return "Farmacia"
+    elif "restaurante" in concepto_lower or "comida" in concepto_lower or "restaurant" in concepto_lower:
+        return "Restaurante"
+    elif "uber" in concepto_lower or "taxi" in concepto_lower or "transporte" in concepto_lower:
+        return "Transporte"
+    elif "netflix" in concepto_lower or "spotify" in concepto_lower or "suscripcion" in concepto_lower:
+        return "Suscripciones"
+    elif "renta" in concepto_lower or "alquiler" in concepto_lower:
+        return "Renta"
+    else:
+        return concepto.strip().title()
+
 
 # --------------------------
 # PANTALLA DE LOGIN
@@ -106,26 +161,26 @@ def obtener_url_editable(link_csv):
 if not st.session_state.autenticado:
     st.title("🔐 Análisis Financiero - Inicio de Sesión")
     st.markdown("---")
-    
+
     col1, col2 = st.columns([1, 1])
-    
+
     with col1:
         st.subheader("👤 Iniciar sesión con credenciales")
         usuario = st.text_input("Usuario", key="login_usuario")
         contraseña = st.text_input("Contraseña", type="password", key="login_password")
-        
+
         if st.button("🔓 Iniciar Sesión", use_container_width=True):
             if usuario in USUARIOS and USUARIOS[usuario] == contraseña:
                 st.session_state.autenticado = True
-                st.session_state.link_sheets = "https://docs.google.com/spreadsheets/d/1_uuGxB-YyKL9vEsiXt_GrHtRTERIQGWnfjY1QeXjacw/export?format=csv&id=1_uuGxB-YyKL9vEsiXt_GrHtRTERIQGWnfjY1QeXjacw&gid=0"
+                st.session_state.link_sheets = "https://docs.google.com/spreadsheets/d/1_uuGxB-YyKL9vEsiXt_GrHtRTERIQGWnfjY1QeXjacw/edit"
                 st.rerun()
             else:
                 st.error("❌ Usuario o contraseña incorrectos")
-    
+
     with col2:
         st.subheader("📊 Acceso directo con enlace")
         link_directo = st.text_input("Pega el enlace de tu Google Sheet", key="link_directo")
-        
+
         if st.button("🔗 Acceder con enlace", use_container_width=True):
             if link_directo:
                 st.session_state.autenticado = True
@@ -133,7 +188,7 @@ if not st.session_state.autenticado:
                 st.rerun()
             else:
                 st.error("❌ Por favor ingresa un enlace válido")
-    
+
     st.markdown("---")
     st.info("💡 **Nota:** Puedes iniciar sesión con usuario y contraseña, o directamente con el enlace de tu Google Sheet público.")
     st.stop()
@@ -150,7 +205,7 @@ with st.sidebar:
         st.session_state.autenticado = False
         st.session_state.link_sheets = ""
         st.rerun()
-    
+
     st.markdown("---")
     st.markdown("### ⚙️ Opciones")
 
@@ -164,10 +219,16 @@ if st.button("🔄 Actualizar datos desde Google Sheets"):
     st.rerun()
 
 # --------------------------
-# CARGA DE DATOS
+# CARGA DE DATOS (todas las cuentas)
 # --------------------------
 if link:
-    df = cargar_datos_google_public(link)
+    sheet_id = extraer_sheet_id(link)
+
+    if not sheet_id:
+        st.error("❌ No se pudo extraer el ID del documento a partir del enlace proporcionado.")
+        st.stop()
+
+    df = cargar_todas_las_cuentas(sheet_id, HOJAS_CUENTAS)
 
     if not df.empty:
         columnas_requeridas = {"Fecha", "Cantidad", "Ingreso /Egreso", "Concepto"}
@@ -176,47 +237,38 @@ if link:
             st.stop()
 
         # Normalización de datos - Mejorado para manejar diferentes formatos de fecha
-        # Guardamos una copia de la columna original para procesamiento
         df["Fecha_Original"] = df["Fecha"].astype(str)
-        
-        # Primero intentamos con dayfirst=True
         df["Fecha"] = pd.to_datetime(df["Fecha"], dayfirst=True, errors="coerce")
-        
-        # Para las fechas que no se pudieron convertir, intentar con formato DD-MM-YY
-        # interpretando YY como 20YY (siglo 21)
+
         fechas_invalidas_mask = df["Fecha"].isna()
         if fechas_invalidas_mask.any():
             for idx in df[fechas_invalidas_mask].index:
                 fecha_str = str(df.loc[idx, "Fecha_Original"]).strip()
                 try:
-                    # Intentar parsear formato DD-MM-YY o DD/MM/YY
                     if "-" in fecha_str:
                         partes = fecha_str.split("-")
                     elif "/" in fecha_str:
                         partes = fecha_str.split("/")
                     else:
                         continue
-                    
+
                     if len(partes) == 3:
-                        dia, mes, año = partes
-                        # Si el año tiene 2 dígitos, convertir a 20YY
-                        if len(año) == 2:
-                            año = "20" + año
-                        fecha_corregida = f"{dia}-{mes}-{año}"
+                        dia, mes_p, año_p = partes
+                        if len(año_p) == 2:
+                            año_p = "20" + año_p
+                        fecha_corregida = f"{dia}-{mes_p}-{año_p}"
                         df.loc[idx, "Fecha"] = pd.to_datetime(fecha_corregida, format="%d-%m-%Y", errors="coerce")
-                except:
+                except Exception:
                     continue
-        
-        # Eliminar columna temporal
+
         df.drop(columns=["Fecha_Original"], inplace=True)
-        
-        # Verificar si aún quedan fechas inválidas
+
         fechas_invalidas = df[df["Fecha"].isna()]
         if not fechas_invalidas.empty:
             st.warning(f"⚠️ Se encontraron {len(fechas_invalidas)} filas con fechas inválidas después del procesamiento. Revisa el formato en tu Google Sheet.")
             with st.expander("Ver filas con fechas inválidas"):
                 st.dataframe(fechas_invalidas)
-        
+
         df["Cantidad"] = df["Cantidad"].astype(str).str.replace(",", ".").astype(float)
         df.dropna(subset=["Fecha", "Cantidad"], inplace=True)
 
@@ -227,16 +279,38 @@ if link:
         }
         df["MesNombre"] = df["Fecha"].dt.month.map(meses_dict)
 
+        # --------------------------
+        # SELECTOR DE CUENTA (Total / Banorte / BBVA / Nu)
+        # --------------------------
+        st.markdown("## 🏦 Selecciona la cuenta a analizar")
+        opciones_cuenta = ["Total (todas las cuentas)"] + list(HOJAS_CUENTAS.keys())
+        cuenta_seleccionada = st.radio(
+            "Ver cuenta:",
+            options=opciones_cuenta,
+            horizontal=True,
+            key="selector_cuenta"
+        )
+
+        if cuenta_seleccionada == "Total (todas las cuentas)":
+            df_cuenta = df.copy()
+        else:
+            df_cuenta = df[df["Cuenta"] == cuenta_seleccionada].copy()
+
+        if df_cuenta.empty:
+            st.warning(f"⚠️ No hay datos para la cuenta '{cuenta_seleccionada}'.")
+            st.stop()
+
         # Vista previa (últimos 5 registros más recientes)
-        st.subheader("📋 Vista previa de los últimos 5 registros (más recientes)")
-        df_sorted = df.sort_values("Fecha", ascending=False)
-        
+        st.subheader(f"📋 Vista previa de los últimos 5 registros ({cuenta_seleccionada})")
+        df_sorted = df_cuenta.sort_values("Fecha", ascending=False)
+
         col_preview, col_button = st.columns([4, 1])
         with col_preview:
-            st.dataframe(df_sorted.head(5), use_container_width=True)
-        
+            columnas_preview = ["Fecha", "Cantidad", "Ingreso /Egreso", "Concepto", "Cuenta"]
+            st.dataframe(df_sorted[columnas_preview].head(5), use_container_width=True)
+
         with col_button:
-            url_editable = obtener_url_editable(link)
+            url_editable = obtener_url_editable_hoja(sheet_id)
             if url_editable:
                 st.markdown(f'<a href="{url_editable}" target="_blank"><button style="background-color:#4CAF50;color:white;padding:10px 20px;border:none;border-radius:5px;cursor:pointer;width:100%;margin-top:10px;">✏️ Editar Registros</button></a>', unsafe_allow_html=True)
             else:
@@ -252,9 +326,9 @@ if link:
         with col2:
             end_date = st.date_input("Fecha final", value=None)
         with col3:
-            mes = st.selectbox("Filtrar por mes", ["Todos"] + sorted(df["MesNombre"].dropna().unique().tolist()))
+            mes = st.selectbox("Filtrar por mes", ["Todos"] + sorted(df_cuenta["MesNombre"].dropna().unique().tolist()))
         with col4:
-            año = st.selectbox("Filtrar por año", ["Todos"] + sorted(df["Fecha"].dt.year.dropna().unique().astype(str).tolist()))
+            año = st.selectbox("Filtrar por año", ["Todos"] + sorted(df_cuenta["Fecha"].dt.year.dropna().unique().astype(str).tolist()))
 
         razon = st.text_input("Filtrar por razón / concepto (ejemplo: oxxo, super, farmacia)")
         excluir = st.text_input("Excluir gastos que contengan (ejemplo: renta, gym)")
@@ -262,7 +336,7 @@ if link:
         # --------------------------
         # APLICAR FILTROS
         # --------------------------
-        df_filtered = filtrar_datos(df, start_date, end_date, razon, excluir, mes, año)
+        df_filtered = filtrar_datos(df_cuenta, start_date, end_date, razon, excluir, mes, año)
 
         if df_filtered.empty:
             st.warning("⚠️ No hay datos que coincidan con los filtros seleccionados.")
@@ -276,7 +350,7 @@ if link:
         # TABLA DE MOVIMIENTOS
         # --------------------------
         st.markdown("### 📄 Tabla de movimientos filtrados")
-        columnas_mostrar = ["Fecha", "Cantidad", "Ingreso /Egreso", "Concepto", "Balance Neto"]
+        columnas_mostrar = ["Fecha", "Cantidad", "Ingreso /Egreso", "Concepto", "Cuenta", "Balance Neto"]
         df_mostrar = df_final[columnas_mostrar].copy()
         df_mostrar.rename(columns={"Balance Neto": "Balance Neto Filtrado"}, inplace=True)
         st.dataframe(df_mostrar, use_container_width=True)
@@ -295,6 +369,33 @@ if link:
             st.metric("📉 Gastos", f"${total_gastos:,.2f}")
         with col3:
             st.metric("🧾 Balance neto", f"${balance:,.2f}")
+
+        # --------------------------
+        # DESGLOSE POR CUENTA (solo visible en vista Total)
+        # --------------------------
+        if cuenta_seleccionada == "Total (todas las cuentas)":
+            st.markdown("### 🏦 Desglose por cuenta")
+            resumen_cuentas = df_final.groupby("Cuenta").agg(
+                Ingresos=("Cantidad", lambda x: x[x > 0].sum()),
+                Gastos=("Cantidad", lambda x: x[x < 0].sum())
+            ).reset_index()
+            resumen_cuentas["Balance"] = resumen_cuentas["Ingresos"] + resumen_cuentas["Gastos"]
+
+            cols_cuentas = st.columns(len(resumen_cuentas))
+            for i, row in resumen_cuentas.iterrows():
+                with cols_cuentas[i]:
+                    st.metric(f"🏦 {row['Cuenta']}", f"${row['Balance']:,.2f}",
+                              delta=f"Ing: ${row['Ingresos']:,.2f} | Gas: ${row['Gastos']:,.2f}")
+
+            fig_cuentas = px.bar(
+                df_final.groupby("Cuenta", as_index=False)["Cantidad"].sum(),
+                x="Cuenta", y="Cantidad",
+                title="Balance neto por cuenta",
+                color="Cuenta",
+                text="Cantidad"
+            )
+            fig_cuentas.update_layout(template="plotly_dark")
+            st.plotly_chart(fig_cuentas, use_container_width=True)
 
         # --------------------------
         # VISUALIZACIONES
@@ -330,39 +431,9 @@ if link:
             st.markdown("### 🛒 Top 10 gastos por concepto")
             gastos_filtrados = df_final[df_final["Cantidad"] < 0]
             if not gastos_filtrados.empty:
-                # Función para agrupar conceptos similares
-                def agrupar_concepto(concepto):
-                    concepto_lower = normalizar_texto(concepto)
-                    # Lista de palabras clave para agrupar (orden importa!)
-                    # Primero verificamos OXXO para que tenga prioridad
-                    if "oxxo" in concepto_lower:
-                        return "OXXO"
-                    # Servicios del depa (agua, luz, gas, internet) - solo si NO es de tienda
-                    elif ("agua" in concepto_lower or "luz" in concepto_lower or "cfe" in concepto_lower or 
-                          "internet" in concepto_lower or
-                          ("gas" in concepto_lower and "gasolina" not in concepto_lower and "combustible" not in concepto_lower)):
-                        return "Servicios Depa"
-                    elif "super" in concepto_lower or "soriana" in concepto_lower or "walmart" in concepto_lower or "heb" in concepto_lower:
-                        return "Supermercado"
-                    elif "gasolina" in concepto_lower or "combustible" in concepto_lower:
-                        return "Gasolina"
-                    elif "farmacia" in concepto_lower or "medicamento" in concepto_lower:
-                        return "Farmacia"
-                    elif "restaurante" in concepto_lower or "comida" in concepto_lower or "restaurant" in concepto_lower:
-                        return "Restaurante"
-                    elif "uber" in concepto_lower or "taxi" in concepto_lower or "transporte" in concepto_lower:
-                        return "Transporte"
-                    elif "netflix" in concepto_lower or "spotify" in concepto_lower or "suscripcion" in concepto_lower:
-                        return "Suscripciones"
-                    elif "renta" in concepto_lower or "alquiler" in concepto_lower:
-                        return "Renta"
-                    else:
-                        return concepto.strip().title()
-                
-                # Crear DataFrame con categorías agrupadas
                 gastos_con_categoria = gastos_filtrados.copy()
                 gastos_con_categoria["ConceptoAgrupado"] = gastos_con_categoria["Concepto"].fillna("Sin descripción").apply(agrupar_concepto)
-                
+
                 resumen_gastos = (
                     gastos_con_categoria
                     .groupby("ConceptoAgrupado", as_index=False)["Cantidad"]
@@ -382,14 +453,13 @@ if link:
                 fig_pie_gastos.update_traces(textinfo="percent+label")
                 fig_pie_gastos.update_layout(template="plotly_dark")
                 st.plotly_chart(fig_pie_gastos, use_container_width=True, key="pie_chart")
-                
-                # Selector para ver desglose
+
                 categoria_seleccionada = st.selectbox(
                     "🔍 Ver desglose de:",
                     options=["Selecciona una categoría..."] + resumen_gastos["ConceptoAgrupado"].tolist(),
                     key="selector_pie"
                 )
-                
+
                 if categoria_seleccionada != "Selecciona una categoría...":
                     desglose = gastos_con_categoria[gastos_con_categoria["ConceptoAgrupado"] == categoria_seleccionada].copy()
                     desglose["Cantidad"] = desglose["Cantidad"].abs()
@@ -398,12 +468,11 @@ if link:
                         "Fecha": "count"
                     }).rename(columns={"Fecha": "Número de veces"})
                     desglose_agrupado = desglose_agrupado.sort_values("Cantidad", ascending=False)
-                    
+
                     st.markdown(f"#### 📋 Desglose de: **{categoria_seleccionada}**")
                     st.markdown(f"**Total: ${desglose_agrupado['Cantidad'].sum():,.2f}**")
                     st.dataframe(desglose_agrupado, use_container_width=True, hide_index=True)
-                    
-                    # Selector adicional para ver transacciones individuales de un concepto específico
+
                     conceptos_con_multiples = desglose_agrupado[desglose_agrupado["Número de veces"] > 1]["Concepto"].tolist()
                     if conceptos_con_multiples:
                         st.markdown("---")
@@ -412,9 +481,9 @@ if link:
                             options=["Selecciona un concepto..."] + conceptos_con_multiples,
                             key="selector_detalle_pie"
                         )
-                        
+
                         if concepto_detalle != "Selecciona un concepto...":
-                            transacciones_individuales = desglose[desglose["Concepto"] == concepto_detalle][["Fecha", "Cantidad", "Ingreso /Egreso"]].copy()
+                            transacciones_individuales = desglose[desglose["Concepto"] == concepto_detalle][["Fecha", "Cantidad", "Ingreso /Egreso", "Cuenta"]].copy()
                             transacciones_individuales = transacciones_individuales.sort_values("Fecha", ascending=False)
                             st.markdown(f"##### 🧾 Transacciones de: **{concepto_detalle}**")
                             st.dataframe(transacciones_individuales, use_container_width=True, hide_index=True)
@@ -451,7 +520,7 @@ if link:
             color="Tipo",
             size=df_final["MontoAbs"],
             color_discrete_map={"Ingreso": "#2ECC71", "Gasto": "#E74C3C"},
-            hover_data=["Concepto", "Ingreso /Egreso", "Cantidad"],
+            hover_data=["Concepto", "Ingreso /Egreso", "Cantidad", "Cuenta"],
             title="🔵 Ingresos y Gastos (tamaño proporcional al monto)"
         )
         fig_scatter.update_traces(opacity=0.8)
@@ -461,43 +530,13 @@ if link:
             yaxis_title="Monto ($)"
         )
         st.plotly_chart(fig_scatter, use_container_width=True)
-       
+
         # --- Gráfico de barras horizontales Top 10 gastos ---
         st.markdown("### 📊 Top 10 gastos filtrados (barras horizontales)")
         if not gastos_filtrados.empty:
-            # Función para agrupar conceptos similares (reutilizamos la misma lógica)
-            def agrupar_concepto(concepto):
-                concepto_lower = normalizar_texto(concepto)
-                # Primero verificamos OXXO para que tenga prioridad
-                if "oxxo" in concepto_lower:
-                    return "OXXO"
-                # Servicios del depa (agua, luz, gas, internet) - solo si NO es de tienda
-                elif ("agua" in concepto_lower or "luz" in concepto_lower or "cfe" in concepto_lower or 
-                      "internet" in concepto_lower or
-                      ("gas" in concepto_lower and "gasolina" not in concepto_lower and "combustible" not in concepto_lower)):
-                    return "Servicios Depa"
-                elif "super" in concepto_lower or "soriana" in concepto_lower or "walmart" in concepto_lower or "heb" in concepto_lower:
-                    return "Supermercado"
-                elif "gasolina" in concepto_lower or "combustible" in concepto_lower:
-                    return "Gasolina"
-                elif "farmacia" in concepto_lower or "medicamento" in concepto_lower:
-                    return "Farmacia"
-                elif "restaurante" in concepto_lower or "comida" in concepto_lower or "restaurant" in concepto_lower:
-                    return "Restaurante"
-                elif "uber" in concepto_lower or "taxi" in concepto_lower or "transporte" in concepto_lower:
-                    return "Transporte"
-                elif "netflix" in concepto_lower or "spotify" in concepto_lower or "suscripcion" in concepto_lower:
-                    return "Suscripciones"
-                elif "renta" in concepto_lower or "alquiler" in concepto_lower:
-                    return "Renta"
-                else:
-                    return concepto.strip().title()
-            
-            # Crear DataFrame con categorías agrupadas
             gastos_con_categoria_barras = gastos_filtrados.copy()
             gastos_con_categoria_barras["ConceptoAgrupado"] = gastos_con_categoria_barras["Concepto"].fillna("Sin descripción").apply(agrupar_concepto)
-            
-            # Agrupamos por concepto y sumamos los gastos
+
             resumen_gastos_barras = (
                 gastos_con_categoria_barras
                 .groupby("ConceptoAgrupado", as_index=False)["Cantidad"]
@@ -507,7 +546,6 @@ if link:
             )
             resumen_gastos_barras["Cantidad"] = resumen_gastos_barras["Cantidad"].abs()
 
-            # Crear gráfico de barras horizontales
             fig_barras = px.bar(
                 resumen_gastos_barras,
                 x="Cantidad",
@@ -518,16 +556,15 @@ if link:
                 color_continuous_scale=px.colors.sequential.Magma_r,
                 title="Top 10 gastos filtrados (click para ver desglose)",
             )
-            fig_barras.update_layout(template="plotly_dark", yaxis={'categoryorder':'total ascending'})
+            fig_barras.update_layout(template="plotly_dark", yaxis={'categoryorder': 'total ascending'})
             st.plotly_chart(fig_barras, use_container_width=True, key="bar_chart")
-            
-            # Selector para ver desglose
+
             categoria_seleccionada_barras = st.selectbox(
                 "🔍 Ver desglose de:",
                 options=["Selecciona una categoría..."] + resumen_gastos_barras.sort_values("Cantidad", ascending=False)["ConceptoAgrupado"].tolist(),
                 key="selector_barras"
             )
-            
+
             if categoria_seleccionada_barras != "Selecciona una categoría...":
                 desglose_barras = gastos_con_categoria_barras[gastos_con_categoria_barras["ConceptoAgrupado"] == categoria_seleccionada_barras].copy()
                 desglose_barras["Cantidad"] = desglose_barras["Cantidad"].abs()
@@ -536,12 +573,11 @@ if link:
                     "Fecha": "count"
                 }).rename(columns={"Fecha": "Número de veces"})
                 desglose_agrupado_barras = desglose_agrupado_barras.sort_values("Cantidad", ascending=False)
-                
+
                 st.markdown(f"#### 📋 Desglose de: **{categoria_seleccionada_barras}**")
                 st.markdown(f"**Total: ${desglose_agrupado_barras['Cantidad'].sum():,.2f}**")
                 st.dataframe(desglose_agrupado_barras, use_container_width=True, hide_index=True)
-                
-                # Selector adicional para ver transacciones individuales de un concepto específico
+
                 conceptos_con_multiples_barras = desglose_agrupado_barras[desglose_agrupado_barras["Número de veces"] > 1]["Concepto"].tolist()
                 if conceptos_con_multiples_barras:
                     st.markdown("---")
@@ -550,13 +586,15 @@ if link:
                         options=["Selecciona un concepto..."] + conceptos_con_multiples_barras,
                         key="selector_detalle_barras"
                     )
-                    
+
                     if concepto_detalle_barras != "Selecciona un concepto...":
-                        transacciones_individuales_barras = desglose_barras[desglose_barras["Concepto"] == concepto_detalle_barras][["Fecha", "Cantidad", "Ingreso /Egreso"]].copy()
+                        transacciones_individuales_barras = desglose_barras[desglose_barras["Concepto"] == concepto_detalle_barras][["Fecha", "Cantidad", "Ingreso /Egreso", "Cuenta"]].copy()
                         transacciones_individuales_barras = transacciones_individuales_barras.sort_values("Fecha", ascending=False)
                         st.markdown(f"##### 🧾 Transacciones de: **{concepto_detalle_barras}**")
                         st.dataframe(transacciones_individuales_barras, use_container_width=True, hide_index=True)
         else:
             st.info("⚠️ No hay gastos para mostrar en la gráfica de barras.")
+    else:
+        st.error("❌ No se pudo cargar información de ninguna de las hojas configuradas (Hoja1, Hoja 3, Hoja 5). Revisa que existan y sean públicas.")
 else:
     st.warning("⚠️ Por favor ingresa un enlace válido de Google Sheets para comenzar.")
