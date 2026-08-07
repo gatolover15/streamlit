@@ -23,6 +23,9 @@ HOJAS_CUENTAS = {
     "Nu": "2094793961",
 }
 
+# Gid de la hoja de viáticos (Hoja 4): conceptos que se cancelan/reembolsan
+GID_VIATICOS = "1392874775"
+
 # Inicializar session_state
 if "autenticado" not in st.session_state:
     st.session_state.autenticado = False
@@ -111,6 +114,35 @@ def cargar_todas_las_cuentas(sheet_id, hojas_cuentas):
     if dfs:
         return pd.concat(dfs, ignore_index=True), errores
     return pd.DataFrame(), errores
+
+
+@st.cache_data
+def cargar_conceptos_viaticos(sheet_id, gid):
+    """Carga la hoja de viáticos y regresa el set de conceptos normalizados (sin tildes, minúsculas).
+    Solo requiere que exista la columna 'Concepto'; no valida Fecha/Cantidad porque puede
+    tener estructura distinta a las cuentas bancarias. Regresa (set_conceptos, mensaje_error)."""
+    try:
+        url = construir_url_hoja_por_gid(sheet_id, gid)
+        data = pd.read_csv(url)
+
+        if _parece_html(data):
+            return set(), (
+                "La hoja de viáticos no regresó datos válidos. Revisa que el documento esté "
+                "compartido como 'Cualquiera con el enlace puede ver'."
+            )
+        if "Concepto" not in data.columns:
+            return set(), (
+                f"La hoja de viáticos no tiene columna 'Concepto'. Columnas encontradas: "
+                f"{', '.join(str(c) for c in data.columns)}."
+            )
+
+        conceptos = set(
+            data["Concepto"].dropna().apply(normalizar_texto)
+        )
+        conceptos.discard("")
+        return conceptos, None
+    except Exception as e:
+        return set(), f"Error cargando la hoja de viáticos: {e}"
 
 
 # --------------------------
@@ -376,9 +408,34 @@ if link:
         excluir = st.text_input("Excluir gastos que contengan (ejemplo: renta, gym)")
 
         # --------------------------
+        # VIÁTICOS APLICADOS
+        # --------------------------
+        conceptos_viaticos, error_viaticos = cargar_conceptos_viaticos(sheet_id, GID_VIATICOS)
+        if error_viaticos:
+            st.warning(f"⚠️ [Viáticos] {error_viaticos}")
+
+        excluir_viaticos = st.checkbox(
+            "🧾 Viáticos aplicados — excluir movimientos que coincidan con conceptos de la hoja de viáticos",
+            value=False,
+            disabled=len(conceptos_viaticos) == 0
+        )
+
+        # --------------------------
         # APLICAR FILTROS
         # --------------------------
         df_filtered = filtrar_datos(df_cuenta, start_date, end_date, razon, excluir, mes, año)
+
+        if excluir_viaticos and conceptos_viaticos:
+            mask_viatico = df_filtered["Concepto"].apply(normalizar_texto).isin(conceptos_viaticos)
+            movimientos_viaticos = df_filtered[mask_viatico]
+            if not movimientos_viaticos.empty:
+                st.info(
+                    f"🧾 Se excluyeron {len(movimientos_viaticos)} movimientos por coincidir con viáticos "
+                    f"(total: ${movimientos_viaticos['Cantidad'].abs().sum():,.2f})."
+                )
+                with st.expander("Ver movimientos excluidos por viáticos"):
+                    st.dataframe(movimientos_viaticos, use_container_width=True)
+            df_filtered = df_filtered[~mask_viatico]
 
         if df_filtered.empty:
             st.warning("⚠️ No hay datos que coincidan con los filtros seleccionados.")
