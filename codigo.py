@@ -295,7 +295,22 @@ if link:
             with st.expander("Ver filas con fechas inválidas"):
                 st.dataframe(fechas_invalidas)
 
-        df["Cantidad"] = df["Cantidad"].astype(str).str.replace(",", ".").astype(float)
+        # Limpieza robusta de la columna Cantidad: quita $ y espacios, maneja comas como
+        # separador decimal, y convierte lo que no se pueda a NaN en vez de tronar la app.
+        cantidad_raw = df["Cantidad"].astype(str).str.strip()
+        cantidad_limpia = (
+            cantidad_raw
+            .str.replace(r"[$\s]", "", regex=True)
+            .str.replace(",", ".", regex=False)
+        )
+        df["Cantidad"] = pd.to_numeric(cantidad_limpia, errors="coerce")
+
+        cantidades_invalidas = df[df["Cantidad"].isna()]
+        if not cantidades_invalidas.empty:
+            st.warning(f"⚠️ Se encontraron {len(cantidades_invalidas)} filas con valores inválidos en 'Cantidad' (se omitirán del análisis).")
+            with st.expander("Ver filas con Cantidad inválida"):
+                st.dataframe(cantidades_invalidas)
+
         df.dropna(subset=["Fecha", "Cantidad"], inplace=True)
 
         meses_dict = {
