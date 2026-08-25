@@ -62,6 +62,9 @@ def obtener_url_editable_hoja(sheet_id, gid="0"):
 # --------------------------
 COLUMNAS_REQUERIDAS = {"Fecha", "Cantidad", "Ingreso /Egreso", "Concepto"}
 
+# Columnas requeridas para la hoja de viáticos (usa "Monto", no "Cantidad")
+COLUMNAS_REQUERIDAS_VIATICOS = {"Fecha", "Monto"}
+
 
 def _parece_html(data):
     """Detecta si lo que regresó pd.read_csv en realidad fue una página de error/HTML de Google"""
@@ -119,7 +122,9 @@ def cargar_todas_las_cuentas(sheet_id, hojas_cuentas):
 @st.cache_data
 def cargar_pares_viaticos(sheet_id, gid):
     """Carga la hoja de viáticos y regresa el set de pares (fecha, monto_absoluto) para hacer match.
-    Requiere columnas 'Fecha' y 'Cantidad'. Regresa (set_pares, mensaje_error)."""
+    La hoja de viáticos usa la columna 'Monto' (no 'Cantidad'). La columna 'Factura' se ignora
+    a propósito, ya que no aporta nada al análisis económico.
+    Requiere columnas 'Fecha' y 'Monto'. Regresa (set_pares, mensaje_error)."""
     try:
         url = construir_url_hoja_por_gid(sheet_id, gid)
         data = pd.read_csv(url)
@@ -129,19 +134,23 @@ def cargar_pares_viaticos(sheet_id, gid):
                 "La hoja de viáticos no regresó datos válidos. Revisa que el documento esté "
                 "compartido como 'Cualquiera con el enlace puede ver'."
             )
-        columnas_faltantes = {"Fecha", "Cantidad"} - set(data.columns)
+        columnas_faltantes = COLUMNAS_REQUERIDAS_VIATICOS - set(data.columns)
         if columnas_faltantes:
             return set(), (
                 f"La hoja de viáticos no tiene las columnas necesarias: {', '.join(columnas_faltantes)}. "
                 f"Columnas encontradas: {', '.join(str(c) for c in data.columns)}."
             )
 
+        # Solo nos quedamos con lo que importa para el match (Fecha + Monto).
+        # La columna Factura y cualquier otra extra se ignoran deliberadamente.
+        data = data[["Fecha", "Monto"]].copy()
+
         data = parsear_columna_fecha(data, "Fecha")
-        data = limpiar_columna_cantidad(data, "Cantidad")
-        data = data.dropna(subset=["Fecha", "Cantidad"])
+        data = limpiar_columna_cantidad(data, "Monto")
+        data = data.dropna(subset=["Fecha", "Monto"])
 
         pares = set(
-            zip(data["Fecha"].dt.date, data["Cantidad"].abs().round(2))
+            zip(data["Fecha"].dt.date, data["Monto"].abs().round(2))
         )
         return pares, None
     except Exception as e:
@@ -247,13 +256,15 @@ def parsear_columna_fecha(df, columna="Fecha"):
 
 
 def limpiar_columna_cantidad(df, columna="Cantidad"):
-    """Limpia $ y espacios, maneja comas como separador decimal, y convierte a numérico
-    (lo que no se pueda convertir queda como NaN). Modifica el DataFrame in-place."""
+    """Limpia $ y espacios, y convierte a numérico usando formato numérico latino
+    (punto = separador de miles, coma = separador decimal). Ej: '-$7.710,92' -> -7710.92
+    Lo que no se pueda convertir queda como NaN. Modifica el DataFrame in-place."""
     cantidad_raw = df[columna].astype(str).str.strip()
     cantidad_limpia = (
         cantidad_raw
-        .str.replace(r"[$\s]", "", regex=True)
-        .str.replace(",", ".", regex=False)
+        .str.replace(r"[$\s]", "", regex=True)   # quita $ y espacios
+        .str.replace(".", "", regex=False)        # quita el separador de miles (punto)
+        .str.replace(",", ".", regex=False)        # convierte el separador decimal (coma) a punto
     )
     df[columna] = pd.to_numeric(cantidad_limpia, errors="coerce")
     return df
