@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
+import re
 
 # --------------------------
 # CONFIGURACIÓN INICIAL
@@ -272,18 +273,35 @@ def parsear_columna_fecha(df, columna="Fecha"):
     return df
 
 
+def _convertir_a_numero(val):
+    if pd.isna(val):
+        return np.nan
+    s = str(val).strip()
+    
+    # Quitar $, espacios y caracteres que no sean dígitos, signo, punto o coma
+    s = re.sub(r'[^\d.,\-+]', '', s)
+    if not s:
+        return np.nan
+    
+    # Si contiene tanto punto como coma (ej. -$1,234.56 o -$1.234,56)
+    if '.' in s and ',' in s:
+        if s.rfind('.') < s.rfind(','):  # Formato latino: 1.234,56
+            s = s.replace('.', '').replace(',', '.')
+        else:  # Formato anglosajón: 1,234.56
+            s = s.replace(',', '')
+    elif ',' in s:  # Solo tiene coma (ej. -553,83) -> convierte la coma a punto
+        s = s.replace(',', '.')
+    # Si solo tiene punto (ej. -553.83), se conserva tal cual
+
+    try:
+        return float(s)
+    except ValueError:
+        return np.nan
+
 def limpiar_columna_cantidad(df, columna="Cantidad"):
-    """Limpia $ y espacios, y convierte a numérico usando formato numérico latino
-    (punto = separador de miles, coma = separador decimal). Ej: '-$7.710,92' -> -7710.92
-    Lo que no se pueda convertir queda como NaN. Modifica el DataFrame in-place."""
-    cantidad_raw = df[columna].astype(str).str.strip()
-    cantidad_limpia = (
-        cantidad_raw
-        .str.replace(r"[$\s]", "", regex=True)   # quita $ y espacios
-        .str.replace(".", "", regex=False)        # quita el separador de miles (punto)
-        .str.replace(",", ".", regex=False)        # convierte el separador decimal (coma) a punto
-    )
-    df[columna] = pd.to_numeric(cantidad_limpia, errors="coerce")
+    """Limpia $ y espacios, y convierte a numérico aceptando punto (.) o coma (,) como decimal.
+    Modifica el DataFrame in-place."""
+    df[columna] = df[columna].apply(_convertir_a_numero)
     return df
 
 
