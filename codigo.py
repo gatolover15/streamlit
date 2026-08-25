@@ -26,6 +26,9 @@ HOJAS_CUENTAS = {
 # Gid de la hoja de viáticos (Hoja 4): conceptos que se cancelan/reembolsan
 GID_VIATICOS = "1392874775"
 
+# Nombre de la columna bandera de viáticos que vive en cada hoja de cuenta
+COLUMNA_FLAG_VIATICOS = "Viáticos"
+
 # Inicializar session_state
 if "autenticado" not in st.session_state:
     st.session_state.autenticado = False
@@ -72,6 +75,17 @@ def _parece_html(data):
     return "html" in columnas_texto or "doctype" in columnas_texto or data.shape[1] <= 1
 
 
+def limpiar_columna_flag_viaticos(df, columna=COLUMNA_FLAG_VIATICOS):
+    """Normaliza la columna bandera de viáticos (1 = es viático, 0 = no lo es) a enteros 0/1.
+    Si la columna no existe en la hoja (por ejemplo, hojas viejas sin esta columna todavía),
+    se crea con 0 para que el resto del código no truene. Modifica el DataFrame in-place."""
+    if columna not in df.columns:
+        df[columna] = 0
+        return df
+    df[columna] = pd.to_numeric(df[columna], errors="coerce").fillna(0).astype(int)
+    return df
+
+
 @st.cache_data
 def cargar_datos_google_public(sheet_id, gid):
     """Carga una pestaña específica de un Google Sheet público por su gid.
@@ -93,6 +107,9 @@ def cargar_datos_google_public(sheet_id, gid):
                 f"La pestaña con gid '{gid}' se cargó, pero le faltan columnas: {', '.join(columnas_faltantes)}. "
                 f"Columnas encontradas: {', '.join(str(c) for c in data.columns)}."
             )
+
+        # Normaliza (o crea) la columna bandera de viáticos por movimiento
+        data = limpiar_columna_flag_viaticos(data)
 
         return data, None
     except Exception as e:
@@ -369,6 +386,10 @@ if link:
 
         df.dropna(subset=["Fecha", "Cantidad"], inplace=True)
 
+        # Por seguridad, aseguramos que la bandera de viáticos exista y esté normalizada
+        # (ya se normaliza por hoja en cargar_datos_google_public, esto es un respaldo extra)
+        df = limpiar_columna_flag_viaticos(df)
+
         meses_dict = {
             1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril",
             5: "Mayo", 6: "Junio", 7: "Julio", 8: "Agosto",
@@ -403,7 +424,7 @@ if link:
 
         col_preview, col_button = st.columns([4, 1])
         with col_preview:
-            columnas_preview = ["Fecha", "Cantidad", "Ingreso /Egreso", "Concepto", "Cuenta"]
+            columnas_preview = ["Fecha", "Cantidad", "Ingreso /Egreso", "Concepto", "Cuenta", COLUMNA_FLAG_VIATICOS]
             st.dataframe(df_sorted[columnas_preview].head(5), use_container_width=True)
 
         with col_button:
@@ -438,10 +459,19 @@ if link:
         if error_viaticos:
             st.warning(f"⚠️ [Viáticos] {error_viaticos}")
 
+        # Un movimiento se puede excluir por dos vías independientes (OR):
+        #   1) su (Fecha, Monto) coincide exactamente con una fila de la hoja de viáticos, o
+        #   2) el propio movimiento trae la bandera "Viáticos" = 1 en su hoja de cuenta.
+        hay_flags_en_cuenta = (
+            COLUMNA_FLAG_VIATICOS in df_cuenta.columns
+            and (df_cuenta[COLUMNA_FLAG_VIATICOS] == 1).any()
+        )
+
         excluir_viaticos = st.checkbox(
-            "🧾 Viáticos aplicados — excluir movimientos cuya Fecha y Monto coincidan exactamente con la hoja de viáticos",
+            "🧾 Viáticos aplicados — excluir movimientos que coincidan con la hoja de viáticos "
+            "(Fecha y Monto) o que estén marcados con 1 en la columna 'Viáticos' de su hoja de cuenta",
             value=False,
-            disabled=len(pares_viaticos) == 0
+            disabled=(len(pares_viaticos) == 0 and not hay_flags_en_cuenta)
         )
 
         # --------------------------
@@ -449,17 +479,24 @@ if link:
         # --------------------------
         df_filtered = filtrar_datos(df_cuenta, start_date, end_date, razon, excluir, mes, año)
 
-        if excluir_viaticos and pares_viaticos:
+        if excluir_viaticos:
             pares_movimientos = list(zip(df_filtered["Fecha"].dt.date, df_filtered["Cantidad"].abs().round(2)))
-            mask_viatico = pd.Series(
+            mask_por_pares = pd.Series(
                 [par in pares_viaticos for par in pares_movimientos],
                 index=df_filtered.index
             )
+            if COLUMNA_FLAG_VIATICOS in df_filtered.columns:
+                mask_por_flag = df_filtered[COLUMNA_FLAG_VIATICOS] == 1
+            else:
+                mask_por_flag = pd.Series(False, index=df_filtered.index)
+
+            mask_viatico = mask_por_pares | mask_por_flag
+
             movimientos_viaticos = df_filtered[mask_viatico]
             if not movimientos_viaticos.empty:
                 st.info(
                     f"🧾 Se excluyeron {len(movimientos_viaticos)} movimientos por coincidir con viáticos "
-                    f"(Fecha + Monto igual) — total: ${movimientos_viaticos['Cantidad'].abs().sum():,.2f}."
+                    f"(por Fecha+Monto o por bandera 'Viáticos') — total: ${movimientos_viaticos['Cantidad'].abs().sum():,.2f}."
                 )
                 with st.expander("Ver movimientos excluidos por viáticos"):
                     st.dataframe(movimientos_viaticos, use_container_width=True)
